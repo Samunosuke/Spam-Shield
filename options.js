@@ -447,10 +447,10 @@ function renderDiagnosticTable() {
               <div><strong>${escapeHtml(entry.domain)}</strong></div>
               <div class="muted truncate" style="font-size:11px; max-width:210px;" title="${escapeHtml(entry.author)}">${escapeHtml(entry.author)}</div>
             </td>
-            <td style="max-width:240px;">
+            <td style="max-width:260px;">
               <div title="${escapeHtml(entry.subject)}">${escapeHtml(entry.subject)}</div>
             </td>
-            <td>${renderCheckPills(entry.checks)}</td>
+            <td style="min-width:440px;">${renderCheckPills(entry.checks)}</td>
             <td style="white-space:nowrap;">
               <strong style="font-size:13px; color:${entry.isSpam ? 'var(--danger)' : 'var(--success)'};">${entry.score}</strong>
               <span class="muted" style="font-size:11px;"> / ${entry.threshold}</span>

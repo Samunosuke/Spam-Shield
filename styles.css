@@ -49,7 +49,7 @@ body {
 }
 
 .popup-body {
-  width: 440px;
+  width: 500px;
   min-height: 360px;
   max-height: 580px;
   display: flex;
@@ -59,9 +59,10 @@ body {
 }
 
 .options-container {
-  max-width: 1120px;
+  max-width: 1920px;
+  width: 98%;
   margin: 0 auto;
-  padding: 20px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -117,7 +118,10 @@ header.app-header p {
   align-items: center;
 }
 
-button, select, input[type="number"], input[type="text"] {
+button,
+select,
+input[type="number"],
+input[type="text"] {
   font: inherit;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -191,9 +195,13 @@ button.btn-danger {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  align-items: center;
 }
 
 .check-pill {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
   font-size: 10.5px;
   padding: 1px 6px;
   border-radius: 4px;
@@ -297,7 +305,7 @@ button.btn-danger {
 
 .log-table-wrapper {
   overflow-x: auto;
-  max-height: 480px;
+  max-height: 680px;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -311,10 +319,10 @@ button.btn-danger {
 
 .log-table th,
 .log-table td {
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .log-table th {
@@ -421,8 +429,8 @@ button.btn-danger {
 }
 
 .mini-btn-group {
-  display: inline-flex;
-  flex-wrap: wrap;
+  display: inline-grid;
+  grid-template-columns: repeat(2, max-content);
   gap: 3px;
 }
 
@@ -488,5 +496,3 @@ button.btn-danger {
 .ctx-menu-item:hover {
   background: var(--surface-alt);
 }
-
-

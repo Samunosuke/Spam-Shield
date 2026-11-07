@@ -66,7 +66,8 @@ function renderCheckPills(checks) {
         ['dmarc', 'DMARC'],
         ['domainAge', 'Alter'],
         ['dnsbl', 'DNSBL'],
-        ['spfIpMatch', 'SPF-IP']
+        ['spfIpMatch', 'SPF-IP'],
+        ['spamKitFingerprint', 'Spam-Kit']
     ];
     return labels.map(([key, label]) => {
         const c = checks[key];
