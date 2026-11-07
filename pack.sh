@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# Das Verzeichnis des Add-ons
+# Directory of the add-on sources
 ADDON_DIR="."
 
-# Der Name der Ausgabedatei (z.B. my-addon.xpi)
+# Name of the output file (e.g. my-addon.xpi)
 OUTPUT_FILE="Suke.EmailValidationAddon.xpi"
 
-# Überprüfen, ob die Ausgabedatei bereits existiert und löschen
+# Remove the output file if it already exists
 if [ -f "$OUTPUT_FILE" ]; then
     rm "$OUTPUT_FILE"
-    echo "Alte $OUTPUT_FILE gelöscht."
+    echo "Removed old $OUTPUT_FILE."
 fi
 
-# Komprimieren des Add-on-Codes in eine ZIP-Datei
+# Compress the add-on code into a ZIP (XPI) archive
 zip -r "$OUTPUT_FILE" "$ADDON_DIR" -x "*.zip" "*.xpi" "*.sh" ".git/*" ".gitignore" "node_modules/*" "package.json" "package-lock.json" "README.md" "LICENSE"
 
-echo "Add-on erfolgreich in $OUTPUT_FILE verpackt."
+echo "Add-on successfully packed into $OUTPUT_FILE."

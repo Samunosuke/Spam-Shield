@@ -11,7 +11,11 @@ const popupLogList = document.getElementById('popupLogList');
 const logSummary = document.getElementById('logSummary');
 
 let currentSettings = null;
+let currentLang = 'auto';
 
+/**
+ * Safely sends a runtime message to background.js without throwing an uncaught error.
+ */
 async function sendToBackground(payload) {
     if (!messenger.runtime || typeof messenger.runtime.sendMessage !== 'function') {
         return null;
@@ -42,37 +46,45 @@ function updateScanBanner(scanState) {
     scanFolderBtn.disabled = true;
     scanSelectedBtn.disabled = true;
     const pct = scanState.total > 0 ? Math.round((scanState.processed / scanState.total) * 100) : 0;
-    scanText.textContent = `${scanState.sourceName}: ${scanState.processed}/${scanState.total} (Spam: ${scanState.spamCount})`;
+    scanText.textContent = t('popup_scan_progress', {
+        source: scanState.sourceName,
+        processed: scanState.processed,
+        total: scanState.total,
+        spam: scanState.spamCount
+    }, currentLang);
     scanProgressFill.style.width = `${pct}%`;
 }
 
 function renderCheckPills(checks) {
     if (!checks) return '';
     if (checks.whitelist) {
-        const info = (checks.whitelist.info || 'Whitelist').replace(/"/g, '&quot;');
-        return `<span class="check-pill pass" title="${info}">✓ Whitelist</span>`;
+        const wlLabel = t('pill_whitelist', {}, currentLang);
+        const info = (checks.whitelist.info || wlLabel).replace(/"/g, '&quot;');
+        return `<span class="check-pill pass" title="${info}">✓ ${wlLabel}</span>`;
     }
     if (checks.blacklist) {
-        const info = (checks.blacklist.info || 'Blacklist').replace(/"/g, '&quot;');
-        return `<span class="check-pill fail" title="${info}">⛔ Blacklist</span>`;
+        const blLabel = t('pill_blacklist', {}, currentLang);
+        const info = (checks.blacklist.info || blLabel).replace(/"/g, '&quot;');
+        return `<span class="check-pill fail" title="${info}">⛔ ${blLabel}</span>`;
     }
 
     const labels = [
-        ['domainExists', 'DNS'],
-        ['dnssec', 'DNSSEC'],
-        ['mx', 'MX'],
-        ['spf', 'SPF'],
-        ['dkim', 'DKIM'],
-        ['dmarc', 'DMARC'],
-        ['domainAge', 'Alter'],
-        ['dnsbl', 'DNSBL'],
-        ['spfIpMatch', 'SPF-IP'],
-        ['spamKitFingerprint', 'Spam-Kit']
+        ['domainExists', t('pill_domainExists_short', {}, currentLang)],
+        ['dnssec', t('pill_dnssec', {}, currentLang)],
+        ['mx', t('pill_mx', {}, currentLang)],
+        ['spf', t('pill_spf', {}, currentLang)],
+        ['dkim', t('pill_dkim', {}, currentLang)],
+        ['dmarc', t('pill_dmarc', {}, currentLang)],
+        ['domainAge', t('pill_domainAge', {}, currentLang)],
+        ['dnsbl', t('pill_dnsbl', {}, currentLang)],
+        ['spfIpMatch', t('pill_spfIpMatch', {}, currentLang)],
+        ['spamKitFingerprint', t('pill_spamKitFingerprint', {}, currentLang)]
     ];
+    const disabledTxt = t('status_disabled', {}, currentLang).toLowerCase();
     return labels.map(([key, label]) => {
         const c = checks[key];
         if (!c || !c.enabled) {
-            return `<span class="check-pill off" title="${label}: deaktiviert">${label}</span>`;
+            return `<span class="check-pill off" title="${label}: ${disabledTxt}">${label}</span>`;
         }
         const cls = c.passed ? 'pass' : 'fail';
         const deltaStr = c.scoreDelta ? ` (${c.scoreDelta})` : '';
@@ -98,7 +110,7 @@ function getEmailFromAuthorString(author) {
 }
 
 function getRegistrableDomain(domain) {
-    if (!domain || domain === '(unbekannt)' || domain === '-') return '';
+    if (!domain || domain === '(unbekannt)' || domain === '(unknown)' || domain === '-') return '';
     const parts = domain.toLowerCase().split('.').filter(Boolean);
     if (parts.length <= 2) return parts.join('.');
     const twoPartTlds = new Set([
@@ -117,33 +129,39 @@ function getRegistrableDomain(domain) {
 
 function renderPopupLog(log) {
     if (!Array.isArray(log) || log.length === 0) {
-        popupLogList.innerHTML = '<div class="muted" style="padding:16px; text-align:center;">Noch keine E-Mails in dieser Sitzung bewertet.</div>';
-        logSummary.textContent = '0 Einträge';
+        popupLogList.innerHTML = `<div class="muted" style="padding:16px; text-align:center;">${escapeHtml(t('popup_empty_log', {}, currentLang))}</div>`;
+        logSummary.textContent = t('popup_log_summary_zero', {}, currentLang);
         return;
     }
 
     const spamTotal = log.filter(e => e.isSpam).length;
-    logSummary.textContent = `${log.length} geprüft · ${spamTotal} Spam`;
+    logSummary.textContent = t('popup_log_summary', { total: log.length, spam: spamTotal }, currentLang);
 
+    const localeCode = resolveLanguage(currentLang) === 'de' ? 'de-DE' : 'en-US';
     const recent = log.slice(0, 12);
     popupLogList.innerHTML = recent.map(entry => {
-        const timeStr = new Date(entry.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const timeStr = new Date(entry.timestamp).toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
-        const rootDom = getRegistrableDomain(entry.domain) || (entry.domain !== '(unbekannt)' && entry.domain !== '-' ? entry.domain : '');
+        const rootDom = getRegistrableDomain(entry.domain) || (entry.domain !== '(unbekannt)' && entry.domain !== '(unknown)' && entry.domain !== '-' ? entry.domain : '');
         const domainWildcard = rootDom ? `*.${rootDom}` : '';
 
         let badgeClass = 'badge-ok';
-        let badgeText = `OK (${entry.score})`;
+        let badgeText = `${t('badge_ok', {}, currentLang)} (${entry.score})`;
         if (entry.actionTaken === 'moved') {
             badgeClass = 'badge-spam';
-            badgeText = `SPAM (${entry.score})`;
+            badgeText = `${t('badge_spam', {}, currentLang)} (${entry.score})`;
         } else if (entry.actionTaken === 'dry-run') {
             badgeClass = 'badge-warn';
-            badgeText = `DRY-RUN (${entry.score})`;
+            badgeText = `${t('badge_dryrun', {}, currentLang)} (${entry.score})`;
         } else if (entry.actionTaken === 'error') {
             badgeClass = 'badge-neutral';
-            badgeText = 'Fehler';
+            badgeText = t('badge_error', {}, currentLang);
         }
+
+        const wlMailTitle = escapeHtml(t('title_wl_mail', { pattern: email }, currentLang));
+        const wlDomTitle = escapeHtml(t('title_wl_dom', { pattern: domainWildcard }, currentLang));
+        const blMailTitle = escapeHtml(t('title_bl_mail', { pattern: email }, currentLang));
+        const blDomTitle = escapeHtml(t('title_bl_dom', { pattern: domainWildcard }, currentLang));
 
         return `
           <div class="popup-log-item">
@@ -157,10 +175,10 @@ function renderPopupLog(log) {
               <span class="muted" style="font-size:10.5px; white-space:nowrap;">${escapeHtml(entry.folderName)} · ${timeStr}</span>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:4px; margin-top:2px;">
-              ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Whitelist">+WL Mail</button>` : ''}
-              ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Whitelist">+WL *.Dom</button>` : ''}
-              ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Blacklist">⛔BL Mail</button>` : ''}
-              ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Blacklist">⛔BL *.Dom</button>` : ''}
+              ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="${wlMailTitle}">${escapeHtml(t('btn_wl_mail', {}, currentLang))}</button>` : ''}
+              ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="${wlDomTitle}">${escapeHtml(t('btn_wl_dom', {}, currentLang))}</button>` : ''}
+              ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="${blMailTitle}">${escapeHtml(t('btn_bl_mail', {}, currentLang))}</button>` : ''}
+              ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="${blDomTitle}">${escapeHtml(t('btn_bl_dom', {}, currentLang))}</button>` : ''}
             </div>
           </div>
         `;
@@ -180,8 +198,8 @@ popupLogList.addEventListener('click', async (e) => {
         op: 'add',
         pattern
     });
-    const label = listType === 'whitelist' ? 'Whitelist' : 'Blacklist';
-    showStatus(`✓ "${pattern}" zur ${label} hinzugefügt.`);
+    const label = listType === 'whitelist' ? t('pill_whitelist', {}, currentLang) : t('pill_blacklist', {}, currentLang);
+    showStatus(t('popup_status_added_list', { pattern, list: label }, currentLang));
 });
 
 async function refreshState() {
@@ -191,15 +209,18 @@ async function refreshState() {
             localData = await messenger.storage.local.get(['settings', 'diagnosticLog']);
         }
         const state = await sendToBackground({ action: 'GET_STATE' });
-        currentSettings = (state && state.settings) || localData.settings || { spamThreshold: -50, dryRun: false };
+        currentSettings = (state && state.settings) || localData.settings || { language: 'auto', spamThreshold: -50, dryRun: false };
+        currentLang = currentSettings.language || 'auto';
+        applyI18nToDOM(currentLang);
+
         quickDryRunToggle.checked = Boolean(currentSettings.dryRun);
         modeIndicator.textContent = currentSettings.dryRun
-            ? `Schwellenwert: < ${currentSettings.spamThreshold} · Evaluierungsmodus (Dry-Run)`
-            : `Schwellenwert: < ${currentSettings.spamThreshold} · Aktiv (Verschieben nach Junk)`;
+            ? t('popup_mode_dryrun', { threshold: currentSettings.spamThreshold }, currentLang)
+            : t('popup_mode_active', { threshold: currentSettings.spamThreshold }, currentLang);
         updateScanBanner(state ? state.scanState : null);
         renderPopupLog((state && state.diagnosticLog) || localData.diagnosticLog || []);
     } catch (err) {
-        showStatus(`Fehler beim Laden: ${err.message || err}`, true);
+        showStatus(t('popup_status_load_err', { error: err.message || err }, currentLang), true);
     }
 }
 
@@ -222,24 +243,24 @@ quickDryRunToggle.addEventListener('change', async () => {
 });
 
 scanFolderBtn.addEventListener('click', async () => {
-    showStatus('Prüfe aktuellen Ordner…');
+    showStatus(t('popup_status_scanning_folder', {}, currentLang));
     const res = await sendToBackground({ action: 'SCAN_ACTIVE_FOLDER' });
     if (!res || res.error) {
-        showStatus(`Ordnerprüfung fehlgeschlagen: ${(res && res.error) || 'Verbindungsfehler'}`, true);
+        showStatus(t('popup_status_folder_err', { error: (res && res.error) || t('conn_error_short', {}, currentLang) }, currentLang), true);
         return;
     }
-    showStatus(`Ordner geprüft: ${res.processed} E-Mails (${res.spamCount} Spam).`);
+    showStatus(t('popup_status_folder_done', { processed: res.processed, spam: res.spamCount }, currentLang));
     await refreshState();
 });
 
 scanSelectedBtn.addEventListener('click', async () => {
-    showStatus('Prüfe ausgewählte E-Mails…');
+    showStatus(t('popup_status_scanning_sel', {}, currentLang));
     const res = await sendToBackground({ action: 'SCAN_SELECTED_MESSAGES' });
     if (!res || res.error) {
-        showStatus(`Auswahlprüfung fehlgeschlagen: ${(res && res.error) || 'Verbindungsfehler'}`, true);
+        showStatus(t('popup_status_sel_err', { error: (res && res.error) || t('conn_error_short', {}, currentLang) }, currentLang), true);
         return;
     }
-    showStatus(`Auswahl geprüft: ${res.processed} E-Mails (${res.spamCount} Spam).`);
+    showStatus(t('popup_status_sel_done', { processed: res.processed, spam: res.spamCount }, currentLang));
     await refreshState();
 });
 
