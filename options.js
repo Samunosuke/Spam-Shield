@@ -1,5 +1,6 @@
-// Default configuration (kept in sync with background.js so options page can also operate directly on storage.local)
+// Default configuration (kept in sync with background.js so the options page can also operate directly on storage.local)
 const DEFAULT_SETTINGS = {
+    language: 'auto',
     spamThreshold: -50,
     dryRun: false,
     monitorAllFolders: true,
@@ -55,6 +56,7 @@ async function sendToBackground(payload) {
 }
 
 // DOM elements – Settings
+const languageSelect = document.getElementById('languageSelect');
 const spamThresholdInput = document.getElementById('spamThreshold');
 const dryRunInput = document.getElementById('dryRun');
 const monitorAllFoldersInput = document.getElementById('monitorAllFolders');
@@ -156,6 +158,18 @@ const ctxBlDomain = document.getElementById('ctxBlDomain');
 let currentSettingsState = cloneDefaults();
 let fullDiagnosticLog = [];
 let ctxMenuTarget = { email: '', domainPattern: '' };
+let lastFolderList = null;
+
+/**
+ * Shortcut translation helper bound to the currently configured UI language.
+ */
+function tr(key, params = {}) {
+    return t(key, params, currentSettingsState.language || 'auto');
+}
+
+function getLocaleCode() {
+    return resolveLanguage(currentSettingsState.language || 'auto') === 'de' ? 'de-DE' : 'en-US';
+}
 
 function escapeHtml(str) {
     return String(str || '')
@@ -182,8 +196,12 @@ function getEmailFromAuthorString(author) {
     return part.replace(/^[<"'\s]+|[>"'\s]+$/g, '').toLowerCase();
 }
 
+function isUnknownDomain(domain) {
+    return !domain || domain === '(unbekannt)' || domain === '(unknown)' || domain === '-';
+}
+
 function getRegistrableDomain(domain) {
-    if (!domain || domain === '(unbekannt)' || domain === '-') return '';
+    if (isUnknownDomain(domain)) return '';
     const parts = domain.toLowerCase().split('.').filter(Boolean);
     if (parts.length <= 2) return parts.join('.');
     const twoPartTlds = new Set([
@@ -200,31 +218,56 @@ function getRegistrableDomain(domain) {
     return parts.slice(-2).join('.');
 }
 
+/**
+ * Re-applies all static and dynamic translations for the currently selected language.
+ */
+function applyLanguage() {
+    applyI18nToDOM(currentSettingsState.language || 'auto');
+    updateModeBadge(currentSettingsState.dryRun);
+    renderRuleLists(currentSettingsState);
+    renderDiagnosticTable();
+    if (lastFolderList) {
+        renderFolderOptions(lastFolderList);
+    }
+}
+
+function updateModeBadge(isDryRun) {
+    if (isDryRun) {
+        currentModeBadge.className = 'badge badge-warn';
+        currentModeBadge.textContent = tr('mode_dryrun_short');
+    } else {
+        currentModeBadge.className = 'badge badge-ok';
+        currentModeBadge.textContent = tr('mode_active_short');
+    }
+}
+
 function renderRuleLists(settings) {
     const wl = Array.isArray(settings.whitelist) ? settings.whitelist : [];
     const bl = Array.isArray(settings.blacklist) ? settings.blacklist : [];
 
-    whitelistCount.textContent = `${wl.length} Einträge`;
-    blacklistCount.textContent = `${bl.length} Einträge`;
+    whitelistCount.textContent = tr('opt_list_count', { count: wl.length });
+    blacklistCount.textContent = tr('opt_list_count', { count: bl.length });
 
     if (wl.length === 0) {
-        whitelistChips.innerHTML = '<span class="muted" style="font-size:11.5px;">Keine Einträge auf der Whitelist.</span>';
+        whitelistChips.innerHTML = `<span class="muted" style="font-size:11.5px;">${escapeHtml(tr('opt_wl_empty'))}</span>`;
     } else {
+        const removeTitle = escapeHtml(tr('title_remove_wl'));
         whitelistChips.innerHTML = wl.map(pattern => `
           <span class="rule-chip whitelist-chip">
             <span>${escapeHtml(pattern)}</span>
-            <button type="button" data-list="whitelist" data-pattern="${escapeHtml(pattern)}" title="Von Whitelist entfernen">✕</button>
+            <button type="button" data-list="whitelist" data-pattern="${escapeHtml(pattern)}" title="${removeTitle}">✕</button>
           </span>
         `).join('');
     }
 
     if (bl.length === 0) {
-        blacklistChips.innerHTML = '<span class="muted" style="font-size:11.5px;">Keine Einträge auf der Blacklist.</span>';
+        blacklistChips.innerHTML = `<span class="muted" style="font-size:11.5px;">${escapeHtml(tr('opt_bl_empty'))}</span>`;
     } else {
+        const removeTitle = escapeHtml(tr('title_remove_bl'));
         blacklistChips.innerHTML = bl.map(pattern => `
           <span class="rule-chip blacklist-chip">
             <span>${escapeHtml(pattern)}</span>
-            <button type="button" data-list="blacklist" data-pattern="${escapeHtml(pattern)}" title="Von Blacklist entfernen">✕</button>
+            <button type="button" data-list="blacklist" data-pattern="${escapeHtml(pattern)}" title="${removeTitle}">✕</button>
           </span>
         `).join('');
     }
@@ -258,26 +301,21 @@ async function modifyListEntry(listType, op, rawPattern) {
     });
 
     renderRuleLists(currentSettingsState);
-    const listLabel = listType === 'whitelist' ? 'Whitelist' : 'Blacklist';
-    flashSaveStatus(op === 'add' ? `✓ "${pattern}" zur ${listLabel} hinzugefügt` : `✓ "${pattern}" von ${listLabel} entfernt`);
+    const listLabel = listType === 'whitelist' ? tr('pill_whitelist') : tr('pill_blacklist');
+    flashSaveStatus(op === 'add'
+        ? tr('toast_list_added', { pattern, list: listLabel })
+        : tr('toast_list_removed', { pattern, list: listLabel }));
 }
 
 function populateSettingsForm(settings) {
     const merged = mergeWithDefaults(settings);
     currentSettingsState = merged;
 
+    languageSelect.value = ['auto', 'de', 'en'].includes(merged.language) ? merged.language : 'auto';
     spamThresholdInput.value = merged.spamThreshold ?? -50;
     dryRunInput.checked = Boolean(merged.dryRun);
     monitorAllFoldersInput.checked = merged.monitorAllFolders !== false;
     maxLogEntriesInput.value = merged.maxLogEntries ?? 100;
-
-    if (merged.dryRun) {
-        currentModeBadge.className = 'badge badge-warn';
-        currentModeBadge.textContent = 'Evaluierungsmodus (Dry-Run)';
-    } else {
-        currentModeBadge.className = 'badge badge-ok';
-        currentModeBadge.textContent = 'Aktiv (Verschieben nach Junk)';
-    }
 
     const checks = merged.checks || {};
     for (const [key, fields] of Object.entries(chkFields)) {
@@ -296,7 +334,7 @@ function populateSettingsForm(settings) {
         }
     }
 
-    renderRuleLists(merged);
+    applyLanguage();
 }
 
 function collectSettingsFromForm() {
@@ -319,6 +357,7 @@ function collectSettingsFromForm() {
     }
 
     return {
+        language: languageSelect.value || 'auto',
         spamThreshold: Number(spamThresholdInput.value) || -50,
         dryRun: dryRunInput.checked,
         monitorAllFolders: monitorAllFoldersInput.checked,
@@ -334,47 +373,47 @@ function renderCheckPills(checks) {
         return '<span class="muted">–</span>';
     }
     if (checks.whitelist) {
-        return `<div class="check-pills"><span class="check-pill pass" title="${escapeHtml(checks.whitelist.info || 'Whitelist')}">✓ Whitelist</span></div>`;
+        const label = tr('pill_whitelist');
+        return `<div class="check-pills"><span class="check-pill pass" title="${escapeHtml(checks.whitelist.info || label)}">✓ ${escapeHtml(label)}</span></div>`;
     }
     if (checks.blacklist) {
-        return `<div class="check-pills"><span class="check-pill fail" title="${escapeHtml(checks.blacklist.info || 'Blacklist')}">⛔ Blacklist (${checks.blacklist.scoreDelta})</span></div>`;
+        const label = tr('pill_blacklist');
+        return `<div class="check-pills"><span class="check-pill fail" title="${escapeHtml(checks.blacklist.info || label)}">⛔ ${escapeHtml(label)} (${checks.blacklist.scoreDelta})</span></div>`;
     }
 
     const labels = [
-        ['domainExists', 'Existenz'],
-        ['dnssec', 'DNSSEC'],
-        ['mx', 'MX'],
-        ['spf', 'SPF'],
-        ['dkim', 'DKIM'],
-        ['dmarc', 'DMARC'],
-        ['domainAge', 'Alter'],
-        ['dnsbl', 'DNSBL'],
-        ['spfIpMatch', 'SPF-IP'],
-        ['spamKitFingerprint', 'Spam-Kit']
+        ['domainExists', tr('pill_domainExists')],
+        ['dnssec', tr('pill_dnssec')],
+        ['mx', tr('pill_mx')],
+        ['spf', tr('pill_spf')],
+        ['dkim', tr('pill_dkim')],
+        ['dmarc', tr('pill_dmarc')],
+        ['domainAge', tr('pill_domainAge')],
+        ['dnsbl', tr('pill_dnsbl')],
+        ['spfIpMatch', tr('pill_spfIpMatch')],
+        ['spamKitFingerprint', tr('pill_spamKitFingerprint')]
     ];
     return `<div class="check-pills">${labels.map(([key, label]) => {
         const c = checks[key];
-        if (!c) {
-            return `<span class="check-pill off" title="${label}: nicht ausgeführt">${label}: –</span>`;
-        }
+        if (!c) return '';
         if (!c.enabled) {
-            return `<span class="check-pill off" title="${label}: deaktiviert">${label}: aus</span>`;
+            return `<span class="check-pill off" title="${escapeHtml(label)}: ${escapeHtml(tr('status_disabled'))}">${escapeHtml(label)}: ${escapeHtml(tr('status_off_short'))}</span>`;
         }
         const cls = c.passed ? 'pass' : 'fail';
         const icon = c.passed ? '✓' : '✗';
         const deltaStr = c.scoreDelta ? ` (${c.scoreDelta})` : '';
-        return `<span class="check-pill ${cls}" title="${escapeHtml(label + ': ' + (c.info || ''))}">${icon} ${label}${deltaStr}</span>`;
+        return `<span class="check-pill ${cls}" title="${escapeHtml(label + ': ' + (c.info || ''))}">${icon} ${escapeHtml(label)}${deltaStr}</span>`;
     }).join('')}</div>`;
 }
 
 function formatSourceLabel(source) {
     switch (source) {
-        case 'auto': return 'Automatisch';
-        case 'folder-scan': return 'Ordner-Scan';
-        case 'context-folder': return 'Kontextmenü (Ordner)';
-        case 'context-messages': return 'Kontextmenü (Auswahl)';
-        case 'selected-messages': return 'Auswahl-Scan';
-        default: return source || 'Unbekannt';
+        case 'auto': return tr('src_auto');
+        case 'folder-scan': return tr('src_folder_scan');
+        case 'context-folder': return tr('src_context_folder');
+        case 'context-messages': return tr('src_context_messages');
+        case 'selected-messages': return tr('src_selected_messages');
+        default: return source || tr('src_unknown');
     }
 }
 
@@ -383,7 +422,7 @@ function renderDiagnosticTable() {
     const query = (logSearchInput.value || '').trim().toLowerCase();
 
     const spamCount = fullDiagnosticLog.filter(e => e.isSpam).length;
-    diagStats.textContent = `${fullDiagnosticLog.length} gespeichert · ${spamCount} als Spam eingestuft`;
+    diagStats.textContent = tr('opt_diag_stats', { total: fullDiagnosticLog.length, spam: spamCount });
 
     const filtered = fullDiagnosticLog.filter(entry => {
         if (statusFilter === 'spam' && !entry.isSpam) return false;
@@ -396,23 +435,25 @@ function renderDiagnosticTable() {
     });
 
     if (filtered.length === 0) {
+        const emptyKey = fullDiagnosticLog.length === 0 ? 'opt_diag_empty' : 'opt_diag_no_match';
         diagTableBody.innerHTML = `
           <tr>
             <td colspan="8" class="muted" style="text-align:center; padding:24px;">
-              Keine passenden Einträge im Diagnose-Protokoll gefunden.
+              ${escapeHtml(tr(emptyKey))}
             </td>
           </tr>
         `;
         return;
     }
 
+    const localeCode = getLocaleCode();
     diagTableBody.innerHTML = filtered.map(entry => {
         const dt = new Date(entry.timestamp);
-        const timeStr = dt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const dateStr = dt.toLocaleDateString('de-DE');
+        const timeStr = dt.toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const dateStr = dt.toLocaleDateString(localeCode);
 
         const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
-        const rootDom = getRegistrableDomain(entry.domain) || (entry.domain !== '(unbekannt)' && entry.domain !== '-' ? entry.domain : '');
+        const rootDom = getRegistrableDomain(entry.domain) || (!isUnknownDomain(entry.domain) ? entry.domain : '');
         const domainWildcard = rootDom ? `*.${rootDom}` : '';
 
         let badgeClass = 'badge-ok';
@@ -426,10 +467,10 @@ function renderDiagnosticTable() {
 
         const quickButtonsHtml = (email || domainWildcard) ? `
           <div class="mini-btn-group">
-            ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Whitelist hinzufügen">+WL Mail</button>` : ''}
-            ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Whitelist hinzufügen">+WL *.Dom</button>` : ''}
-            ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Blacklist hinzufügen">⛔BL Mail</button>` : ''}
-            ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Blacklist hinzufügen">⛔BL *.Dom</button>` : ''}
+            ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="${escapeHtml(tr('title_wl_mail', { pattern: email }))}">${escapeHtml(tr('btn_wl_mail'))}</button>` : ''}
+            ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="${escapeHtml(tr('title_wl_dom', { pattern: domainWildcard }))}">${escapeHtml(tr('btn_wl_dom'))}</button>` : ''}
+            ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="${escapeHtml(tr('title_bl_mail', { pattern: email }))}">${escapeHtml(tr('btn_bl_mail'))}</button>` : ''}
+            ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="${escapeHtml(tr('title_bl_dom', { pattern: domainWildcard }))}">${escapeHtml(tr('btn_bl_dom'))}</button>` : ''}
           </div>
         ` : '<span class="muted">–</span>';
 
@@ -479,27 +520,36 @@ function updateScanBanner(scanState) {
     scanSelectedMsgsBtn.disabled = true;
 
     const pct = scanState.total > 0 ? Math.round((scanState.processed / scanState.total) * 100) : 0;
-    scanText.textContent = `Prüfe "${scanState.sourceName}": ${scanState.processed} von ${scanState.total} E-Mails (${scanState.spamCount} Spam)…`;
+    scanText.textContent = tr('opt_scan_progress', {
+        source: scanState.sourceName,
+        processed: scanState.processed,
+        total: scanState.total,
+        spam: scanState.spamCount
+    });
     scanProgressFill.style.width = `${pct}%`;
+}
+
+function renderFolderOptions(folders) {
+    if (!Array.isArray(folders) || folders.length === 0) {
+        folderSelect.innerHTML = `<option value="">${escapeHtml(tr('opt_folders_empty'))}</option>`;
+        return;
+    }
+    const currentVal = folderSelect.value;
+    folderSelect.innerHTML = folders.map(f =>
+        `<option value="${escapeHtml(f.id)}">${escapeHtml(f.displayPath)}</option>`
+    ).join('');
+    if (currentVal && folders.some(f => f.id === currentVal)) {
+        folderSelect.value = currentVal;
+    }
 }
 
 async function loadFoldersDropdown() {
     try {
         const res = await sendToBackground({ action: 'GET_ALL_FOLDERS' });
-        const folders = (res && res.folders) || [];
-        if (folders.length === 0) {
-            folderSelect.innerHTML = '<option value="">Keine Ordner gefunden</option>';
-            return;
-        }
-        const currentVal = folderSelect.value;
-        folderSelect.innerHTML = folders.map(f =>
-            `<option value="${escapeHtml(f.id)}">${escapeHtml(f.displayPath)}</option>`
-        ).join('');
-        if (currentVal && folders.some(f => f.id === currentVal)) {
-            folderSelect.value = currentVal;
-        }
+        lastFolderList = (res && res.folders) || [];
+        renderFolderOptions(lastFolderList);
     } catch (err) {
-        folderSelect.innerHTML = `<option value="">Fehler beim Laden der Ordner: ${escapeHtml(err.message)}</option>`;
+        folderSelect.innerHTML = `<option value="">${escapeHtml(tr('opt_folders_err', { error: err.message }))}</option>`;
     }
 }
 
@@ -516,60 +566,80 @@ async function loadState(includeSettingsForm = false) {
         const state = await sendToBackground({ action: 'GET_STATE' });
         const effectiveSettings = mergeWithDefaults((state && state.settings) || storedSettings);
 
-        if (includeSettingsForm) {
-            populateSettingsForm(effectiveSettings);
-        } else {
-            currentSettingsState = effectiveSettings;
-            renderRuleLists(effectiveSettings);
-        }
         cacheCountEl.textContent = (state && state.cacheSize) ?? 0;
         fullDiagnosticLog = (state && Array.isArray(state.diagnosticLog))
             ? state.diagnosticLog
             : (Array.isArray(storedLog) ? storedLog : []);
+
+        if (includeSettingsForm) {
+            populateSettingsForm(effectiveSettings);
+        } else {
+            const langChanged = effectiveSettings.language !== currentSettingsState.language;
+            currentSettingsState = effectiveSettings;
+            if (langChanged) {
+                applyLanguage();
+            } else {
+                renderRuleLists(effectiveSettings);
+                renderDiagnosticTable();
+            }
+        }
         updateScanBanner(state ? state.scanState : null);
-        renderDiagnosticTable();
     } catch (err) {
         console.error('Failed to load state:', err);
     }
 }
 
+/**
+ * Persists the given settings both directly in storage.local and via background.js.
+ */
+async function persistSettings(newSettings) {
+    if (messenger.storage && messenger.storage.local) {
+        await messenger.storage.local.set({ settings: newSettings });
+    }
+    await sendToBackground({
+        action: 'SAVE_SETTINGS',
+        settings: newSettings
+    });
+}
+
+// Event listeners – Language switch (applied and saved immediately)
+languageSelect.addEventListener('change', async () => {
+    currentSettingsState.language = languageSelect.value || 'auto';
+    try {
+        await persistSettings(currentSettingsState);
+    } catch (err) {
+        console.error('Save language error:', err);
+    }
+    applyLanguage();
+    flashSaveStatus(tr('toast_saved'));
+});
+
 // Event listeners – Settings
 saveSettingsBtn.addEventListener('click', async () => {
     try {
         const newSettings = collectSettingsFromForm();
-        if (messenger.storage && messenger.storage.local) {
-            await messenger.storage.local.set({ settings: newSettings });
-        }
-        await sendToBackground({
-            action: 'SAVE_SETTINGS',
-            settings: newSettings
-        });
+        await persistSettings(newSettings);
         populateSettingsForm(newSettings);
-        flashSaveStatus('✓ Einstellungen gespeichert');
+        flashSaveStatus(tr('toast_saved'));
     } catch (err) {
         console.error('Save settings error:', err);
-        flashSaveStatus(`Fehler: ${err.message || err}`);
+        flashSaveStatus(tr('toast_err', { error: err.message || err }));
     }
 });
 
 resetSettingsBtn.addEventListener('click', async () => {
     try {
         const defaults = cloneDefaults();
-        // Keep user's custom whitelist/blacklist when resetting check scores
+        // Keep the user's custom whitelist/blacklist and language when resetting check scores
         defaults.whitelist = Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [];
         defaults.blacklist = Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [];
-        if (messenger.storage && messenger.storage.local) {
-            await messenger.storage.local.set({ settings: defaults });
-        }
-        await sendToBackground({
-            action: 'SAVE_SETTINGS',
-            settings: defaults
-        });
+        defaults.language = currentSettingsState.language || 'auto';
+        await persistSettings(defaults);
         populateSettingsForm(defaults);
-        flashSaveStatus('↺ Standard-Scores wiederhergestellt');
+        flashSaveStatus(tr('toast_reset'));
     } catch (err) {
         console.error('Reset settings error:', err);
-        flashSaveStatus(`Fehler: ${err.message || err}`);
+        flashSaveStatus(tr('toast_err', { error: err.message || err }));
     }
 });
 
@@ -614,7 +684,7 @@ blacklistChips.addEventListener('click', async (e) => {
     await modifyListEntry('blacklist', 'remove', btn.getAttribute('data-pattern'));
 });
 
-// Event listeners – Quick buttons & Right-click context menu in History table
+// Event listeners – Quick buttons & right-click context menu in the history table
 diagTableBody.addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-quick-list]');
     if (!btn) return;
@@ -635,16 +705,16 @@ diagTableBody.addEventListener('contextmenu', (e) => {
     ctxMenuHeader.textContent = email ? `${email} (${domainPattern})` : domainPattern;
 
     ctxWlEmail.style.display = email ? 'flex' : 'none';
-    ctxWlEmail.textContent = `✅ E-Mail zur Whitelist (${email})`;
+    ctxWlEmail.textContent = tr('ctx_wl_email', { email });
 
     ctxWlDomain.style.display = domainPattern ? 'flex' : 'none';
-    ctxWlDomain.textContent = `✅ Domain zur Whitelist (${domainPattern})`;
+    ctxWlDomain.textContent = tr('ctx_wl_domain', { domain: domainPattern });
 
     ctxBlEmail.style.display = email ? 'flex' : 'none';
-    ctxBlEmail.textContent = `⛔ E-Mail zur Blacklist (${email})`;
+    ctxBlEmail.textContent = tr('ctx_bl_email', { email });
 
     ctxBlDomain.style.display = domainPattern ? 'flex' : 'none';
-    ctxBlDomain.textContent = `⛔ Domain zur Blacklist (${domainPattern})`;
+    ctxBlDomain.textContent = tr('ctx_bl_domain', { domain: domainPattern });
 
     const menuWidth = 310;
     const menuHeight = 160;
@@ -672,71 +742,71 @@ ctxBlDomain.addEventListener('click', () => modifyListEntry('blacklist', 'add', 
 clearCacheBtn.addEventListener('click', async () => {
     await sendToBackground({ action: 'CLEAR_DNS_CACHE' });
     cacheCountEl.textContent = '0';
-    flashSaveStatus('✓ DNS/RDAP-Cache geleert');
+    flashSaveStatus(tr('toast_cache_cleared'));
 });
+
+function reportScanResult(res, doneKey) {
+    if (!res || res.error) {
+        folderScanResult.textContent = tr('toast_err', { error: (res && res.error) || tr('bg_not_reachable') });
+        return false;
+    }
+    folderScanResult.textContent = tr(doneKey, { processed: res.processed, spam: res.spamCount });
+    return true;
+}
 
 scanSelectedFolderBtn.addEventListener('click', async () => {
     const folderId = folderSelect.value;
     if (!folderId) return;
     const folderName = folderSelect.options[folderSelect.selectedIndex]?.text || folderId;
-    folderScanResult.textContent = `Starte Prüfung für "${folderName}"…`;
+    folderScanResult.textContent = tr('scan_starting_folder', { folder: folderName });
     const res = await sendToBackground({
         action: 'SCAN_FOLDER_BY_ID',
         folderId,
         folderName
     });
-    if (!res || res.error) {
-        folderScanResult.textContent = `Fehler: ${(res && res.error) || 'Hintergrundskript nicht erreichbar – bitte diesen Tab einmal neu laden (F5).'}`;
-        return;
+    if (reportScanResult(res, 'scan_done_folder')) {
+        await loadState(false);
     }
-    folderScanResult.textContent = `✓ Ordnerprüfung abgeschlossen: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
-    await loadState(false);
 });
 
 scanActiveFolderBtn.addEventListener('click', async () => {
-    folderScanResult.textContent = 'Starte Prüfung des aktiven Ordners…';
+    folderScanResult.textContent = tr('scan_starting_active');
     const res = await sendToBackground({ action: 'SCAN_ACTIVE_FOLDER' });
-    if (!res || res.error) {
-        folderScanResult.textContent = `Fehler: ${(res && res.error) || 'Hintergrundskript nicht erreichbar – bitte diesen Tab einmal neu laden (F5).'}`;
-        return;
+    if (reportScanResult(res, 'scan_done_active')) {
+        await loadState(false);
     }
-    folderScanResult.textContent = `✓ Aktiver Ordner geprüft: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
-    await loadState(false);
 });
 
 scanSelectedMsgsBtn.addEventListener('click', async () => {
-    folderScanResult.textContent = 'Prüfe markierte E-Mails…';
+    folderScanResult.textContent = tr('scan_starting_selected');
     const res = await sendToBackground({ action: 'SCAN_SELECTED_MESSAGES' });
-    if (!res || res.error) {
-        folderScanResult.textContent = `Fehler: ${(res && res.error) || 'Hintergrundskript nicht erreichbar – bitte diesen Tab einmal neu laden (F5).'}`;
-        return;
+    if (reportScanResult(res, 'scan_done_selected')) {
+        await loadState(false);
     }
-    folderScanResult.textContent = `✓ Auswahl geprüft: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
-    await loadState(false);
 });
 
 runDomainTestBtn.addEventListener('click', async () => {
     const input = testDomainInput.value.trim();
     const dkimHeader = testDkimInput.value.trim();
     if (!input) {
-        domainTestOutput.innerHTML = '<span style="color:var(--danger);">Bitte eine Domain oder E-Mail-Adresse eingeben.</span>';
+        domainTestOutput.innerHTML = `<span style="color:var(--danger);">${escapeHtml(tr('opt_tester_empty_err'))}</span>`;
         return;
     }
 
-    domainTestOutput.innerHTML = '<span class="muted">Prüfe Whitelist/Blacklist, DNS, SPF, DKIM, DMARC, RDAP (Domain-Alter) &amp; DNSBL…</span>';
+    domainTestOutput.innerHTML = `<span class="muted">${escapeHtml(tr('opt_tester_running'))}</span>`;
     const res = await sendToBackground({
         action: 'TEST_DOMAIN',
         input,
         dkimHeader: dkimHeader || null
     });
     if (!res || res.error) {
-        domainTestOutput.innerHTML = `<span style="color:var(--danger);">Fehler: ${escapeHtml((res && res.error) || 'Hintergrundskript nach Add-on-Update noch nicht verbunden – bitte diesen Tab einmal mit F5 neu laden.')}</span>`;
+        domainTestOutput.innerHTML = `<span style="color:var(--danger);">${escapeHtml(tr('toast_err', { error: (res && res.error) || tr('bg_not_reachable') }))}</span>`;
         return;
     }
     const badgeCls = res.isSpam ? 'badge-spam' : 'badge-ok';
     const statusTxt = res.whitelisted
         ? `WHITELIST (${res.matchedRule})`
-        : (res.blacklisted ? `BLACKLIST (${res.matchedRule})` : (res.isSpam ? 'SPAM (unter Schwellenwert)' : 'OK (Vertrauenswürdig)'));
+        : (res.blacklisted ? `BLACKLIST (${res.matchedRule})` : (res.isSpam ? tr('opt_tester_status_spam') : tr('opt_tester_status_ok')));
     domainTestOutput.innerHTML = `
       <div style="padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -783,13 +853,21 @@ if (messenger.storage && messenger.storage.onChanged) {
                 renderDiagnosticTable();
             }
             if (changes.settings && changes.settings.newValue) {
-                currentSettingsState = mergeWithDefaults(changes.settings.newValue);
-                renderRuleLists(currentSettingsState);
+                const next = mergeWithDefaults(changes.settings.newValue);
+                const langChanged = next.language !== currentSettingsState.language;
+                currentSettingsState = next;
+                if (langChanged) {
+                    languageSelect.value = next.language || 'auto';
+                    applyLanguage();
+                } else {
+                    renderRuleLists(currentSettingsState);
+                }
             }
         }
     });
 }
 
 // Initial load
+applyI18nToDOM(currentSettingsState.language);
 loadState(true);
 loadFoldersDropdown();

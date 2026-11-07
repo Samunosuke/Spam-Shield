@@ -1,4 +1,4 @@
-// Listener für den Empfang von Nachrichten
+// Listener for newly received messages
 messenger.messages.onNewMailReceived.addListener(handleMessages, true); // monitorAllFolders = true
 
 /**
@@ -31,6 +31,7 @@ const g_IGNORED_FOLDER_TYPES = new Set(['junk', 'trash', 'sent', 'drafts', 'temp
  * Default configuration for checks, scores, and behavior
  */
 const DEFAULT_SETTINGS = {
+    language: 'auto',
     spamThreshold: -50,
     dryRun: false,
     monitorAllFolders: true,
@@ -96,6 +97,21 @@ let g_SCAN_STATE = {
     startedAt: null
 };
 
+/**
+ * Currently configured UI language preference ('auto' | 'de' | 'en'), kept in sync with storage.
+ */
+let g_LANG = 'auto';
+
+/**
+ * Translates a key from i18n.js using the currently configured UI language.
+ * @param {string} key
+ * @param {Record<string, string|number>} [params]
+ * @returns {string}
+ */
+function L(key, params = {}) {
+    return t(key, params, g_LANG);
+}
+
 // Initialize context menus on startup/install
 initExtension();
 
@@ -112,6 +128,21 @@ async function initExtension() {
     setupContextMenus();
 }
 
+// Rebuild context menus (and drop language-specific cached infos) whenever the UI language changes
+if (messenger.storage && messenger.storage.onChanged) {
+    messenger.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes.settings || !changes.settings.newValue) {
+            return;
+        }
+        const nextLang = changes.settings.newValue.language || 'auto';
+        if (nextLang !== g_LANG) {
+            g_LANG = nextLang;
+            g_RDAP_CACHE.clear();
+            setupContextMenus();
+        }
+    });
+}
+
 /**
  * Registers context menu entries for folders and message lists in Thunderbird
  */
@@ -123,37 +154,37 @@ function setupContextMenus() {
     messenger.menus.removeAll().then(() => {
         messenger.menus.create({
             id: 'suke-validate-folder',
-            title: 'Ordner auf Spam-Domains prüfen (Suke)',
+            title: L('menu_validate_folder'),
             contexts: ['folder_pane']
         });
 
         messenger.menus.create({
             id: 'suke-validate-messages',
-            title: 'Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)',
+            title: L('menu_validate_messages'),
             contexts: ['message_list']
         });
 
         messenger.menus.create({
             id: 'suke-whitelist-email',
-            title: 'Absender-E-Mail zur Whitelist hinzufügen (Suke)',
+            title: L('menu_whitelist_email'),
             contexts: ['message_list']
         });
 
         messenger.menus.create({
             id: 'suke-whitelist-domain',
-            title: 'Absender-Domain (*.domain) zur Whitelist hinzufügen (Suke)',
+            title: L('menu_whitelist_domain'),
             contexts: ['message_list']
         });
 
         messenger.menus.create({
             id: 'suke-blacklist-email',
-            title: 'Absender-E-Mail zur Blacklist hinzufügen & als Spam behandeln (Suke)',
+            title: L('menu_blacklist_email'),
             contexts: ['message_list']
         });
 
         messenger.menus.create({
             id: 'suke-blacklist-domain',
-            title: 'Absender-Domain (*.domain) zur Blacklist hinzufügen & als Spam behandeln (Suke)',
+            title: L('menu_blacklist_domain'),
             contexts: ['message_list']
         });
     }).catch(err => console.warn('Failed to create context menus:', err));
@@ -263,7 +294,9 @@ async function getSettings() {
         }
         const whitelist = Array.isArray(saved.whitelist) ? saved.whitelist : [];
         const blacklist = Array.isArray(saved.blacklist) ? saved.blacklist : [];
-        return Object.assign({}, cloneDefaults(), saved, { checks: mergedChecks, whitelist, blacklist });
+        const merged = Object.assign({}, cloneDefaults(), saved, { checks: mergedChecks, whitelist, blacklist });
+        g_LANG = merged.language || 'auto';
+        return merged;
     } catch (err) {
         console.warn('Failed to load settings from storage, using defaults:', err);
         return cloneDefaults();
@@ -371,7 +404,7 @@ function resolveFolderName(folder, message) {
     if (folder && typeof folder === 'object' && folder.path) {
         return folder.path;
     }
-    return 'Postfach';
+    return L('folder_default');
 }
 
 /**
@@ -400,15 +433,15 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
                 messageId: message.id,
                 author: senderAddress,
                 senderEmail: senderEmail || '',
-                domain: '(unbekannt)',
-                subject: message.subject || '(Kein Betreff)',
+                domain: L('unknown_domain'),
+                subject: message.subject || L('no_subject'),
                 folderName,
                 source,
                 score: 0,
                 threshold: settings.spamThreshold,
                 isSpam: false,
                 actionTaken: 'error',
-                actionLabel: 'Keine Domain erkannt',
+                actionLabel: L('act_no_domain'),
                 checks: {}
             }, settings.maxLogEntries);
             return { isSpam: false, score: 0 };
@@ -426,22 +459,22 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
         console.log(`Validation score for ${domain} (messageID: ${message.id}): ${score} (threshold: ${settings.spamThreshold})`);
 
         let actionTaken = 'passed';
-        let actionLabel = result.whitelisted ? `Whitelist (${result.matchedRule})` : 'OK';
+        let actionLabel = result.whitelisted ? L('act_whitelist', { rule: result.matchedRule }) : L('badge_ok');
 
         if (isSpam) {
             if (settings.dryRun) {
                 console.log(`[DRY-RUN SPAM] Would mark message from ${message.author} (score: ${score}) as Junk.`);
                 actionTaken = 'dry-run';
                 actionLabel = result.blacklisted
-                    ? `Blacklist (${result.matchedRule}) · Dry-Run`
-                    : 'Spam (Dry-Run – nicht verschoben)';
+                    ? L('act_blacklist_dryrun', { rule: result.matchedRule })
+                    : L('act_spam_dryrun');
             } else {
                 console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
                 await markAndMoveToSpam(message, targetFolder);
                 actionTaken = 'moved';
                 actionLabel = result.blacklisted
-                    ? `Blacklist (${result.matchedRule}) · Verschoben`
-                    : 'Als Spam markiert & verschoben';
+                    ? L('act_blacklist_moved', { rule: result.matchedRule })
+                    : L('act_spam_moved');
             }
         }
 
@@ -452,7 +485,7 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             author: senderAddress,
             senderEmail: senderEmail || '',
             domain,
-            subject: message.subject || '(Kein Betreff)',
+            subject: message.subject || L('no_subject'),
             folderName,
             source,
             score,
@@ -472,14 +505,14 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             messageId: message.id,
             author: message.author || '',
             domain: '-',
-            subject: message.subject || '(Kein Betreff)',
+            subject: message.subject || L('no_subject'),
             folderName,
             source,
             score: 0,
             threshold: settings.spamThreshold,
             isSpam: false,
             actionTaken: 'error',
-            actionLabel: `Fehler: ${error.message || error}`,
+            actionLabel: L('act_error_prefix', { error: error.message || error }),
             checks: {}
         }, settings.maxLogEntries);
         return { isSpam: false, score: 0 };
@@ -537,7 +570,7 @@ async function scanMessageList(msgList, folder = null, source = 'message-scan') 
 
     g_SCAN_STATE = {
         running: true,
-        sourceName: effectiveFolder && effectiveFolder.name ? effectiveFolder.name : 'Auswahl',
+        sourceName: effectiveFolder && effectiveFolder.name ? effectiveFolder.name : L('selection_default'),
         processed: 0,
         total: allMessages.length,
         spamCount: 0,
@@ -738,7 +771,7 @@ function getDomainFromAddress(senderAddress) {
         return null;
     }
 
-    // Falls eine Adresse in spitzen Klammern steht (z.B. "Name <user@domain.tld>"), extrahiere den Teil darin
+    // If the address is wrapped in angle brackets (e.g. "Name <user@domain.tld>"), extract the inner part
     const angleMatch = senderAddress.match(/<([^<>]+)>/);
     const addressPart = angleMatch ? angleMatch[1] : senderAddress;
 
@@ -748,7 +781,7 @@ function getDomainFromAddress(senderAddress) {
     }
 
     let domain = addressPart.slice(atIndex + 1).trim();
-    // Entfernt eventuelle Restzeichen wie ">", Anführungszeichen oder Leerzeichen
+    // Strip trailing characters such as ">", quotes or whitespace
     domain = domain.replace(/[>"'\s]+$/g, '').toLowerCase();
 
     return domain || null;
@@ -803,7 +836,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             enabled: true,
             passed: true,
             scoreDelta: 0,
-            info: `Freigegeben durch Whitelist-Regel: ${whiteMatch}`
+            info: L('info_whitelisted', { rule: whiteMatch })
         };
         return {
             score: 0,
@@ -822,7 +855,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             enabled: true,
             passed: false,
             scoreDelta: -1000,
-            info: `Gesperrt durch Blacklist-Regel: ${blackMatch}`
+            info: L('info_blacklisted', { rule: blackMatch })
         };
         return {
             score: -1000,
@@ -860,8 +893,8 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             passed: domainExists,
             scoreDelta: delta,
             info: domainExists
-                ? `DNS aktiv (${[hasARecord ? 'A' : null, hasAAAARecord ? 'AAAA' : null, hasMXRecord ? 'MX' : null].filter(Boolean).join('/')})`
-                : (isNxDomain ? 'NXDOMAIN (existiert nicht)' : 'Keine A/AAAA/MX Records')
+                ? L('info_dns_active', { records: [hasARecord ? 'A' : null, hasAAAARecord ? 'AAAA' : null, hasMXRecord ? 'MX' : null].filter(Boolean).join('/') })
+                : (isNxDomain ? L('info_nxdomain') : L('info_no_a_aaaa_mx'))
         };
 
         if (!domainExists && cfg.domainExists.stopOnFail !== false) {
@@ -873,7 +906,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             };
         }
     } else {
-        checks.domainExists = { enabled: false, passed: domainExists, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.domainExists = { enabled: false, passed: domainExists, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 2. DNSSEC check
@@ -888,10 +921,10 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             enabled: true,
             passed: hasDNSSEC,
             scoreDelta: delta,
-            info: hasDNSSEC ? 'DNSSEC gültig (AD=true)' : 'Keine DNSSEC-Signatur'
+            info: hasDNSSEC ? L('info_dnssec_valid') : L('info_dnssec_none')
         };
     } else {
-        checks.dnssec = { enabled: false, passed: hasDNSSEC, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.dnssec = { enabled: false, passed: hasDNSSEC, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 3. MX record check
@@ -905,10 +938,10 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             enabled: true,
             passed: hasMXRecord,
             scoreDelta: delta,
-            info: hasMXRecord ? `MX vorhanden (${mxRecordData.Answer.length})` : 'Kein MX-Record'
+            info: hasMXRecord ? L('info_mx_present', { count: mxRecordData.Answer.length }) : L('info_mx_none')
         };
     } else {
-        checks.mx = { enabled: false, passed: hasMXRecord, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.mx = { enabled: false, passed: hasMXRecord, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 4. SPF record check
@@ -928,10 +961,10 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             enabled: true,
             passed: hasSPF,
             scoreDelta: delta,
-            info: hasSPF ? spfRecord.replace(/"/g, '') : 'Kein SPF-Record (v=spf1)'
+            info: hasSPF ? spfRecord.replace(/"/g, '') : L('info_spf_none')
         };
     } else {
-        checks.spf = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.spf = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 5. DKIM record check
@@ -945,7 +978,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
                 enabled: true,
                 passed: false,
                 scoreDelta: delta,
-                info: 'Kein DKIM-Signature Header in E-Mail'
+                info: L('info_dkim_no_header')
             };
         } else {
             const dkimDomain = dkimInfo.domain || domain;
@@ -961,12 +994,12 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
                 passed: hasDKIM,
                 scoreDelta: delta,
                 info: hasDKIM
-                    ? `DKIM Schlüssel gefunden (${dkimInfo.selector}._domainkey.${dkimDomain})`
-                    : `Kein DNS-Eintrag für ${dkimInfo.selector}._domainkey.${dkimDomain}`
+                    ? L('info_dkim_found', { query: `${dkimInfo.selector}._domainkey.${dkimDomain}` })
+                    : L('info_dkim_missing', { query: `${dkimInfo.selector}._domainkey.${dkimDomain}` })
             };
         }
     } else {
-        checks.dkim = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.dkim = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 6. DMARC record & policy check (_dmarc.<domain>)
@@ -978,20 +1011,20 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
     if (cfg.dmarc && cfg.dmarc.enabled) {
         const penalizeNone = cfg.dmarc.penalizeNone !== false;
         let passed = false;
-        let info = 'Kein DMARC-Record (_dmarc)';
+        let info = L('info_dmarc_none');
 
         if (dmarcRes && dmarcRes.record) {
             if (dmarcRes.policy === 'reject' || dmarcRes.policy === 'quarantine') {
                 passed = true;
-                info = `DMARC aktiv (p=${dmarcRes.policy})`;
+                info = L('info_dmarc_active', { policy: dmarcRes.policy });
             } else if (dmarcRes.policy === 'none') {
                 passed = !penalizeNone;
                 info = penalizeNone
-                    ? 'DMARC hat nur p=none (keine Durchsetzung / typisch für Spam-Domains)'
-                    : 'DMARC vorhanden (p=none)';
+                    ? L('info_dmarc_p_none_penalized')
+                    : L('info_dmarc_p_none_ok');
             } else {
                 passed = true;
-                info = `DMARC vorhanden (${dmarcRes.record})`;
+                info = L('info_dmarc_present', { record: dmarcRes.record });
             }
         }
 
@@ -1004,7 +1037,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             info
         };
     } else {
-        checks.dmarc = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.dmarc = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 7. Domain Registration Age (RDAP check for Newly Registered Domains)
@@ -1018,7 +1051,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
                 enabled: true,
                 passed: true,
                 scoreDelta: 0,
-                info: `RDAP für TLD nicht verfügbar (${ageRes.reason || 'übersprungen'})`
+                info: L('info_rdap_unavailable', { reason: ageRes.reason || L('info_rdap_skipped') })
             };
         } else {
             const isOldEnough = ageRes.ageDays >= minAgeDays;
@@ -1030,12 +1063,12 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
                 passed: isOldEnough,
                 scoreDelta: delta,
                 info: isOldEnough
-                    ? `Alter: ${ageRes.ageDays} Tage (registriert ${regDateShort}, >= ${minAgeDays}d)`
-                    : `Frisch registriert: erst ${ageRes.ageDays} Tage alt (${regDateShort}, < ${minAgeDays}d)`
+                    ? L('info_age_ok', { days: ageRes.ageDays, date: regDateShort, min: minAgeDays })
+                    : L('info_age_young', { days: ageRes.ageDays, date: regDateShort, min: minAgeDays })
             };
         }
     } else {
-        checks.domainAge = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.domainAge = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // Extract IPv4 from A record or Received header for DNSBL & SPF-IP checks
@@ -1056,11 +1089,11 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             passed,
             scoreDelta: delta,
             info: passed
-                ? `Nicht gelistet (${ipToCheck ? `Domain + IP ${ipToCheck}` : 'Domain'})`
-                : `Gelistet auf Blacklist: ${blRes.lists.join(', ')}`
+                ? (ipToCheck ? L('info_dnsbl_clean_ip', { ip: ipToCheck }) : L('info_dnsbl_clean_dom'))
+                : L('info_dnsbl_listed', { lists: blRes.lists.join(', ') })
         };
     } else {
-        checks.dnsbl = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.dnsbl = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 9. SPF Sender-IP / Authentication-Results Verification
@@ -1076,7 +1109,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             info: spfEval.info
         };
     } else {
-        checks.spfIpMatch = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.spfIpMatch = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     // 10. Spam-Kit DNS Generator Fingerprint check (purely DNS-based, zero direct HTTP calls to unknown servers)
@@ -1092,7 +1125,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             info: kitEval.info
         };
     } else {
-        checks.spamKitFingerprint = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+        checks.spamKitFingerprint = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
 
     return {
@@ -1207,7 +1240,7 @@ async function getRdapTldMap() {
 async function getDomainAgeRDAP(domain) {
     const rootDomain = getRegistrableDomain(domain);
     if (!rootDomain || !rootDomain.includes('.')) {
-        return { available: false, reason: 'Ungültige Domain' };
+        return { available: false, reason: L('info_rdap_invalid_domain') };
     }
 
     const now = Date.now();
@@ -1221,7 +1254,7 @@ async function getDomainAgeRDAP(domain) {
     const rdapBaseUrl = tldMap.get(tld);
 
     if (!rdapBaseUrl) {
-        const result = { available: false, reason: `Kein RDAP für .${tld}` };
+        const result = { available: false, reason: L('info_rdap_no_tld', { tld }) };
         g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
         return result;
     }
@@ -1246,14 +1279,14 @@ async function getDomainAgeRDAP(domain) {
         const events = Array.isArray(data.events) ? data.events : [];
         const regEvent = events.find(e => e && (e.eventAction === 'registration' || e.eventAction === 'registered'));
         if (!regEvent || !regEvent.eventDate) {
-            const result = { available: false, reason: 'Kein Registrierungsdatum im RDAP' };
+            const result = { available: false, reason: L('info_rdap_no_regdate') };
             g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
             return result;
         }
 
         const regTime = new Date(regEvent.eventDate).getTime();
         if (Number.isNaN(regTime)) {
-            return { available: false, reason: 'Ungültiges Datum' };
+            return { available: false, reason: L('info_rdap_invalid_date') };
         }
 
         const ageDays = Math.max(0, Math.floor((now - regTime) / (1000 * 60 * 60 * 24)));
@@ -1266,7 +1299,7 @@ async function getDomainAgeRDAP(domain) {
         return result;
     } catch (err) {
         clearTimeout(timeoutId);
-        const result = { available: false, reason: err.name === 'AbortError' ? 'Timeout' : 'RDAP-Server nicht erreichbar' };
+        const result = { available: false, reason: err.name === 'AbortError' ? 'Timeout' : L('info_rdap_unreachable') };
         g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
         return result;
     }
@@ -1364,7 +1397,7 @@ function evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps = [])
     if (!headers || typeof headers !== 'object') {
         return {
             passed: true,
-            info: 'Keine E-Mail-Header (Manueller Domain-Test)'
+            info: L('info_spf_manual_test')
         };
     }
 
@@ -1374,13 +1407,13 @@ function evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps = [])
         if (/\bspf\s*=\s*(fail|softfail|permerror)\b/i.test(authResults) || /^fail\b/i.test(authResults.trim())) {
             return {
                 passed: false,
-                info: 'Laut Mailserver-Header ist SPF fehlgeschlagen (spf=fail/softfail)'
+                info: L('info_spf_header_fail')
             };
         }
         if (/\bspf\s*=\s*pass\b/i.test(authResults) || /^pass\b/i.test(authResults.trim())) {
             return {
                 passed: true,
-                info: 'SPF-IP laut Mailserver-Header autorisiert (spf=pass)'
+                info: L('info_spf_header_pass')
             };
         }
     }
@@ -1390,7 +1423,7 @@ function evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps = [])
     if (!senderIp || !spfRecord) {
         return {
             passed: true,
-            info: senderIp ? `Einlieferungs-IP: ${senderIp}` : 'Keine externe Einlieferungs-IP im Header'
+            info: senderIp ? L('info_spf_sender_ip', { ip: senderIp }) : L('info_spf_no_sender_ip')
         };
     }
 
@@ -1409,14 +1442,14 @@ function evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps = [])
         if (allowedIps.size > 0 && !allowedIps.has(senderIp)) {
             return {
                 passed: false,
-                info: `Einlieferungs-IP (${senderIp}) stimmt nicht mit SPF (${Array.from(allowedIps).join(', ')}) überein`
+                info: L('info_spf_ip_mismatch', { ip: senderIp, allowed: Array.from(allowedIps).join(', ') })
             };
         }
     }
 
     return {
         passed: true,
-        info: `Einlieferungs-IP (${senderIp}) plausibel`
+        info: L('info_spf_ip_plausible', { ip: senderIp })
     };
 }
 
@@ -1442,7 +1475,7 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
     if (dmarcRes && dmarcRes.record && dmarcRes.policy === 'none') {
         const dmarcClean = dmarcRes.record.toLowerCase();
         if (dmarcClean.includes(`rua=mailto:postmaster@${cleanDom}`) && dmarcClean.includes(`ruf=mailto:dmarc@${cleanDom}`)) {
-            dnsIndicators.push('Generator-DMARC (p=none + postmaster/dmarc)');
+            dnsIndicators.push(L('info_kit_dmarc'));
         }
     }
 
@@ -1456,7 +1489,7 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
     const isRawIpSpfTemplate = /^v=spf1\s+a\s+mx(?:\s+ip4:[0-9./]+)+\s+-all$/i.test(cleanSpf);
 
     if (hasSelfMx10 && isRawIpSpfTemplate) {
-        dnsIndicators.push('Spam-Kit MX/SPF-Muster (10 <domain> + v=spf1 a mx ip4 -all)');
+        dnsIndicators.push(L('info_kit_mx_spf'));
     }
 
     // Indicator 3: Redundant A-record IP explicitly duplicated inside "v=spf1 a mx ip4:<A-IP> -all"
@@ -1464,7 +1497,7 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
         const spfIps = (cleanSpf.match(/\bip4:(\d{1,3}(?:\.\d{1,3}){3})\b/g) || []).map(s => s.replace(/^ip4:/, ''));
         const duplicateAIp = aRecordIps.find(ip => spfIps.includes(ip));
         if (duplicateAIp) {
-            dnsIndicators.push(`Redundante A-Record-IP im Baukasten-SPF (${duplicateAIp})`);
+            dnsIndicators.push(L('info_kit_dup_ip', { ip: duplicateAIp }));
         }
     }
 
@@ -1478,7 +1511,7 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
         }
         const snowshoePrefix = Object.keys(prefixCounts).find(p => prefixCounts[p] >= 2);
         if (snowshoePrefix && isRawIpSpfTemplate) {
-            dnsIndicators.push(`Snowshoe-SPF (${prefixCounts[snowshoePrefix]} IPs im Netz ${snowshoePrefix}.0/24)`);
+            dnsIndicators.push(L('info_kit_snowshoe', { count: prefixCounts[snowshoePrefix], prefix: snowshoePrefix }));
         }
     }
 
@@ -1487,7 +1520,7 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
     if (cleanDom !== rootDom) {
         const subPrefix = cleanDom.slice(0, cleanDom.length - rootDom.length - 1);
         if (subPrefix && !commonSubdomains.has(subPrefix) && hasSelfMx10) {
-            dnsIndicators.push(`Wegwerf-Subdomain mit eigenem Self-MX (${subPrefix}.*)`);
+            dnsIndicators.push(L('info_kit_subdomain', { sub: subPrefix }));
         }
     }
 
@@ -1498,7 +1531,7 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
         return {
             detected: true,
             indicators: dnsIndicators,
-            info: `Spam-Baukasten erkannt: ${dnsIndicators.join(' + ')}`
+            info: L('info_kit_detected', { indicators: dnsIndicators.join(' + ') })
         };
     }
 
@@ -1506,8 +1539,8 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
         detected: false,
         indicators: dnsIndicators,
         info: dnsIndicators.length > 0
-            ? `Unauffällig (1 Einzelmerkmal: ${dnsIndicators[0]})`
-            : 'Kein bekannter Spam-Baukasten-Fingerabdruck'
+            ? L('info_kit_single', { indicator: dnsIndicators[0] })
+            : L('info_kit_clean')
     };
 }
 
@@ -1519,11 +1552,11 @@ function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord,
 async function getSPFRecord(domain) {
     const data = await getDNSEntry(domain, 'TXT');
     if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
-        console.warn(`Keine TXT-Einträge für ${domain} gefunden.`);
+        console.warn(`No TXT records found for ${domain}.`);
         return null;
     }
 
-    // Filtern Sie nach SPF-Einträgen (z.B. "v=spf1 ...")
+    // Filter for SPF records (e.g. "v=spf1 ...")
     const spfRecord = data.Answer.find(rec => {
         if (typeof rec.data !== 'string') return false;
         const recordData = rec.data.replace(/"/g, '').trim();
@@ -1536,7 +1569,7 @@ async function getSPFRecord(domain) {
 /**
  * Reads the DKIM record via cloudflare (DoH service) and returns it, or null if the entry could not be found.
  * @param {string} domain the domain to check
- * @param {string} selector DKIM selector read from the Email header ([Selektor]._domainkey.[Domäne])
+ * @param {string} selector DKIM selector read from the Email header ([selector]._domainkey.[domain])
  * @returns {Promise<object|null>}
  */
 async function getDKIMRecord(domain, selector) {
@@ -1544,11 +1577,11 @@ async function getDKIMRecord(domain, selector) {
         return null;
     }
 
-    // Der DoH-Endpunkt und die spezifische DNS-Anfrage für den DKIM-Eintrag.
+    // Build the specific DNS query name for the DKIM record.
     const query = `${selector}._domainkey.${domain}`;
     const data = await getDNSEntry(query, 'TXT');
 
-    // Suchen nach dem DKIM-TXT-Eintrag, der den öffentlichen Schlüssel enthält.
+    // Look for the DKIM TXT record containing the public key.
     if (data && Array.isArray(data.Answer) && data.Answer.length > 0) {
         const dkimEntry = data.Answer.find(rec => {
             if (typeof rec.data !== 'string') return false;
@@ -1560,7 +1593,7 @@ async function getDKIMRecord(domain, selector) {
         }
     }
 
-    console.log(`Kein DKIM-Eintrag gefunden für: ${query}`);
+    console.log(`No DKIM record found for: ${query}`);
     return null;
 }
 
@@ -1571,7 +1604,7 @@ async function getDKIMRecord(domain, selector) {
  */
 function getDKIMInfo(dkimHeaders) {
     if (!Array.isArray(dkimHeaders) || dkimHeaders.length === 0 || !dkimHeaders[0]) {
-        console.log('Keine DKIM-Header in der Nachricht gefunden.');
+        console.log('No DKIM headers found in message.');
         return null;
     }
 
@@ -1590,7 +1623,7 @@ function getDKIMInfo(dkimHeaders) {
     }
 
     if (!selector) {
-        console.log('Kein Selektor im ersten DKIM-Header gefunden.', dkimHeaderString);
+        console.log('No selector found in first DKIM header.', dkimHeaderString);
         return null;
     }
 
@@ -1664,13 +1697,13 @@ async function getDNSEntry(domain, type, returnRawStatus = false) {
         try {
             const response = await fetch(url, { headers });
             if (!response.ok) {
-                console.warn(`DoH HTTP-Fehler (${response.status}) für ${domain} (${type}).`);
+                console.warn(`DoH HTTP error (${response.status}) for ${domain} (${type}).`);
                 return null;
             }
             data = await response.json();
             g_DNS_CACHE.set(cacheKey, { timestamp: now, data });
         } catch (error) {
-            console.error('Fehler bei der DNS-Abfrage:', error);
+            console.error('DNS query failed:', error);
             return null;
         }
     }
@@ -1679,13 +1712,13 @@ async function getDNSEntry(domain, type, returnRawStatus = false) {
         return data;
     }
 
-    // Wenn die "Answer"-Sektion leer ist, hat die Domäne keinen entsprechenden Record.
+    // If the "Answer" section is empty, the domain has no matching record.
     if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
-        console.warn(`Domäne '${domain}' scheint nicht zu existieren oder hat keinen ${type}-Record.`);
+        console.warn(`Domain '${domain}' does not seem to exist or has no ${type} record.`);
         return null;
     }
 
-    return data; // Es wurden DNS-Einträge gefunden.
+    return data; // DNS records were found.
 }
 
 /**
@@ -1701,7 +1734,7 @@ async function measureLatency(url, timeout = 5000) {
 
     try {
         const response = await fetch(url, {
-            method: 'HEAD', // HEAD ist schneller als GET
+            method: 'HEAD', // HEAD is faster than GET
             signal: controller.signal
         });
         clearTimeout(id);
@@ -1711,9 +1744,9 @@ async function measureLatency(url, timeout = 5000) {
     } catch (error) {
         clearTimeout(id);
         if (error.name === 'AbortError') {
-            console.error('Anfrage wegen Timeout abgebrochen.');
+            console.error('Request aborted due to timeout.');
         } else {
-            console.error('Fetch-Anfrage fehlgeschlagen:', error);
+            console.error('Fetch request failed:', error);
         }
         return { success: false, latency: -1 };
     }
@@ -1808,32 +1841,32 @@ if (messenger.runtime && messenger.runtime.onMessage) {
 
                 case 'SCAN_ACTIVE_FOLDER': {
                     if (!messenger.mailTabs) {
-                        return { error: 'mailTabs API nicht verfügbar.' };
+                        return { error: L('err_mailtabs_unavail') };
                     }
                     const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
                     const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
                     if (!activeTab || !activeTab.displayedFolder) {
-                        return { error: 'Kein aktiver Ordner in Thunderbird ausgewählt.' };
+                        return { error: L('err_no_active_folder') };
                     }
                     return await scanFolder(activeTab.displayedFolder, 'folder-scan');
                 }
 
                 case 'SCAN_SELECTED_MESSAGES': {
                     if (!messenger.mailTabs) {
-                        return { error: 'mailTabs API nicht verfügbar.' };
+                        return { error: L('err_mailtabs_unavail') };
                     }
                     const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
                     const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
                     const msgList = await messenger.mailTabs.getSelectedMessages();
                     if (!msgList || !msgList.messages || msgList.messages.length === 0) {
-                        return { error: 'Keine E-Mails in der aktuellen Ansicht ausgewählt.' };
+                        return { error: L('err_no_selected_msgs') };
                     }
                     return await scanMessageList(msgList, activeTab ? activeTab.displayedFolder : null, 'selected-messages');
                 }
 
                 case 'SCAN_FOLDER_BY_ID': {
                     if (!request.folderId) {
-                        return { error: 'Keine Ordner-ID angegeben.' };
+                        return { error: L('err_no_folder_id') };
                     }
                     const allFolders = await getAllFoldersList();
                     const found = allFolders.find(f => f.id === request.folderId) || { id: request.folderId, name: request.folderName || request.folderId };
@@ -1845,7 +1878,7 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     const senderEmail = rawInput.includes('@') ? await extractEmailFromAuthor(rawInput) : null;
                     const domain = rawInput.includes('@') ? await extractDomainFromAuthor(rawInput) : rawInput.toLowerCase();
                     if (!domain) {
-                        return { error: 'Bitte eine gültige Domain oder E-Mail-Adresse eingeben.' };
+                        return { error: L('err_invalid_domain_input') };
                     }
                     const dkimHeaders = request.dkimHeader ? [request.dkimHeader] : null;
                     const result = await validateDomainDetailed(domain, dkimHeaders, null, null, senderEmail);
@@ -1857,7 +1890,7 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     const op = request.op || 'add'; // 'add' | 'remove'
                     const pattern = String(request.pattern || '').trim().toLowerCase();
                     if (!pattern) {
-                        return { error: 'Kein gültiger Eintrag angegeben.' };
+                        return { error: L('err_invalid_list_pattern') };
                     }
 
                     const current = await getSettings();

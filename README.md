@@ -46,6 +46,7 @@ Obwohl der Spammer für `snismirpel.com` gültige `A`-, `MX`-, `SPF`- und `DKIM`
    - Direkt-Umschalter für den **Evaluierungs- / Dry-Run-Modus**.
    - Live-Fortschrittsbalken und Kompaktansicht der letzten 12 geprüften E-Mails inkl. `+WL` / `⛔BL`-Schnellbuttons.
 3. **Konfigurations- & Live-Diagnose-Seite ([options.html](file:///home/samonosuke/Workspace/AntiGravity/Suke.EmailValidationAddon/options.html))**
+   - **Sprache / Language (DE / EN)**: Die gesamte Oberfläche (Popup, Einstellungen, Diagnose-Infos, Thunderbird-Kontextmenüs) ist zweisprachig. Standard ist *Automatisch* – beginnt die Browser-/Thunderbird-Sprache mit `de`, erscheint die Oberfläche auf Deutsch, sonst auf Englisch. Alle Texte liegen zentral in der Sprachdatei [i18n.js](file:///home/samonosuke/Workspace/AntiGravity/Suke.EmailValidationAddon/i18n.js).
    - **Whitelist- & Blacklist-Verwaltung**: Unterstützt einzelne E-Mail-Adressen (`user@domain.tld`) sowie ganze Domains inkl. Subdomains (`*.relusnelar.org` oder `relusnelar.org`). Die Whitelist hat immer Vorrang vor der Blacklist.
    - Alle 9 DNS-/Reputations-Prüfungen einzeln aktivierbar/deaktivierbar und im Score frei einstellbar.
    - Einstellbarer **Spam-Schwellenwert** (Standard: `< -50`) und **Dry-Run-Modus** (nur bewerten & loggen, ohne E-Mails zu verschieben).
