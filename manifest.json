@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Suke.EmailValidationAddon",
+  "version": "1.1",
+  "description": "Validiert Absender-Domänen, um Spam zu erkennen.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "email-validation@suke.local",
+      "strict_min_version": "128.0"
+    }
+  },
+  "permissions": [
+    "messagesRead",
+    "accountsRead",
+    "messagesMove",
+  ],
+  "host_permissions": [
+    "https://cloudflare-dns.com/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  }
+}
