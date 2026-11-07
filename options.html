@@ -1,20 +1,24 @@
 <!DOCTYPE html>
 <html lang="de">
+
 <head>
   <meta charset="UTF-8">
   <title>Suke Email Validation – Konfiguration & Live-Diagnose</title>
   <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
   <div class="options-container">
     <header class="app-header">
       <div>
         <h1>🛡️ Suke.EmailValidationAddon – Konfiguration & Live-Diagnose</h1>
-        <p>Konfiguriere Prüfregeln & Score-Gewichtungen, starte manuelle Ordnerprüfungen und überwache die letzten Bewertungen in Echtzeit.</p>
+        <p>Konfiguriere Prüfregeln, Whitelist/Blacklist &amp; Score-Gewichtungen, starte manuelle Ordnerprüfungen und
+          überwache die letzten Bewertungen in Echtzeit.</p>
       </div>
       <div class="btn-row">
         <span id="saveStatus" class="status-toast"></span>
-        <button id="clearCacheBtn" title="Leert den In-Memory-Cache für DNS- und RDAP-Abfragen">🔄 DNS/RDAP-Cache leeren (<span id="cacheCount">0</span>)</button>
+        <button id="clearCacheBtn" title="Leert den In-Memory-Cache für DNS- und RDAP-Abfragen">🔄 DNS/RDAP-Cache leeren
+          (<span id="cacheCount">0</span>)</button>
       </div>
     </header>
 
@@ -29,14 +33,15 @@
       <!-- Karte 1: Allgemeine Einstellungen & Prüfungs-Scores -->
       <section class="card">
         <h2>
-          <span>⚙️ Filter-Konfiguration & Scores</span>
+          <span>⚙️ Filter-Konfiguration &amp; Scores</span>
           <span id="currentModeBadge" class="badge badge-ok">Aktiv</span>
         </h2>
 
         <div class="form-row">
           <div>
             <label for="spamThreshold">Spam-Schwellenwert (Score &lt; Wert = Spam)</label>
-            <span class="hint">Fällt der Gesamt-Score einer Domain unter diesen Wert (z. B. -51 bei -50), gilt die Mail als Spam.</span>
+            <span class="hint">Fällt der Gesamt-Score einer Domain unter diesen Wert (z. B. -51 bei -50), gilt die Mail
+              als Spam.</span>
           </div>
           <input type="number" id="spamThreshold" step="5" max="0" min="-500" value="-50">
         </div>
@@ -44,7 +49,8 @@
         <div class="form-row">
           <div>
             <label for="dryRun">Evaluierungs- / Dry-Run-Modus</label>
-            <span class="hint">Wenn aktiv, werden E-Mails nur bewertet und in der Live-Diagnose angezeigt, aber <strong>nicht</strong> verschoben oder als Junk markiert.</span>
+            <span class="hint">Wenn aktiv, werden E-Mails nur bewertet und in der Live-Diagnose angezeigt, aber
+              <strong>nicht</strong> verschoben oder als Junk markiert.</span>
           </div>
           <input type="checkbox" id="dryRun">
         </div>
@@ -52,7 +58,8 @@
         <div class="form-row">
           <div>
             <label for="monitorAllFolders">Alle E-Mail-Ordner überwachen</label>
-            <span class="hint">Überwacht alle Ordner außer Systemordner (Junk, Papierkorb, Gesendet, Entwürfe, Archiv). Wenn aus: nur Posteingang.</span>
+            <span class="hint">Überwacht alle Ordner außer Systemordner (Junk, Papierkorb, Gesendet, Entwürfe, Archiv).
+              Wenn aus: nur Posteingang.</span>
           </div>
           <input type="checkbox" id="monitorAllFolders">
         </div>
@@ -65,7 +72,8 @@
           <input type="number" id="maxLogEntries" step="10" min="10" max="1000" value="100">
         </div>
 
-        <h3 style="font-size:13px; margin:14px 0 6px;">Einzelne DNS-, Reputations- &amp; Authentifizierungs-Prüfungen</h3>
+        <h3 style="font-size:13px; margin:14px 0 6px;">Einzelne DNS-, Reputations- &amp; Authentifizierungs-Prüfungen
+        </h3>
         <table class="settings-table">
           <thead>
             <tr>
@@ -80,11 +88,13 @@
               <td><input type="checkbox" id="chk_domainExists_enabled"></td>
               <td>
                 <strong>1. Domain-Existenz (A / AAAA / MX)</strong>
-                <div class="muted" style="font-size:11px;">Prüft, ob die Domain im DNS überhaupt existiert (kein NXDOMAIN).</div>
+                <div class="muted" style="font-size:11px;">Prüft, ob die Domain im DNS überhaupt existiert (kein
+                  NXDOMAIN).</div>
               </td>
               <td><input type="number" id="chk_domainExists_score" step="5" max="0" min="-500"></td>
               <td>
-                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" title="Keine weiteren DNS-Abfragen durchführen, wenn die Domain nicht existiert">
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;"
+                  title="Keine weiteren DNS-Abfragen durchführen, wenn die Domain nicht existiert">
                   <input type="checkbox" id="chk_domainExists_stop"> Sofort abbrechen
                 </label>
               </td>
@@ -93,7 +103,8 @@
               <td><input type="checkbox" id="chk_dnssec_enabled"></td>
               <td>
                 <strong>2. DNSSEC-Signatur (AD-Flag)</strong>
-                <div class="muted" style="font-size:11px;">Prüft, ob die DNS-Antwort kryptografisch per DNSSEC signiert ist.</div>
+                <div class="muted" style="font-size:11px;">Prüft, ob die DNS-Antwort kryptografisch per DNSSEC signiert
+                  ist.</div>
               </td>
               <td><input type="number" id="chk_dnssec_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
@@ -102,7 +113,8 @@
               <td><input type="checkbox" id="chk_mx_enabled"></td>
               <td>
                 <strong>3. MX-Record vorhanden</strong>
-                <div class="muted" style="font-size:11px;">Prüft, ob die Absender-Domain selbst E-Mails empfangen kann.</div>
+                <div class="muted" style="font-size:11px;">Prüft, ob die Absender-Domain selbst E-Mails empfangen kann.
+                </div>
               </td>
               <td><input type="number" id="chk_mx_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
@@ -111,7 +123,8 @@
               <td><input type="checkbox" id="chk_spf_enabled"></td>
               <td>
                 <strong>4. SPF-Record vorhanden (v=spf1)</strong>
-                <div class="muted" style="font-size:11px;">Prüft, ob ein gültiger SPF-TXT-Eintrag für die Domain veröffentlicht ist.</div>
+                <div class="muted" style="font-size:11px;">Prüft, ob ein gültiger SPF-TXT-Eintrag für die Domain
+                  veröffentlicht ist.</div>
               </td>
               <td><input type="number" id="chk_spf_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
@@ -120,7 +133,8 @@
               <td><input type="checkbox" id="chk_dkim_enabled"></td>
               <td>
                 <strong>5. DKIM-Signatur &amp; DNS-Key</strong>
-                <div class="muted" style="font-size:11px;">Prüft den DKIM-Signature-Header (s=/d=) und den öffentlichen Schlüssel im DNS.</div>
+                <div class="muted" style="font-size:11px;">Prüft den DKIM-Signature-Header (s=/d=) und den öffentlichen
+                  Schlüssel im DNS.</div>
               </td>
               <td><input type="number" id="chk_dkim_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
@@ -129,11 +143,13 @@
               <td><input type="checkbox" id="chk_dmarc_enabled"></td>
               <td>
                 <strong>6. DMARC-Richtlinie (_dmarc)</strong>
-                <div class="muted" style="font-size:11px;">Prüft auf gültige DMARC-Policy (<code>p=quarantine</code> / <code>p=reject</code>). Spammer nutzen oft gar kein DMARC oder nur <code>p=none</code>.</div>
+                <div class="muted" style="font-size:11px;">Prüft auf gültige DMARC-Policy (<code>p=quarantine</code> /
+                  <code>p=reject</code>). Spammer nutzen oft gar kein DMARC oder nur <code>p=none</code>.</div>
               </td>
               <td><input type="number" id="chk_dmarc_score" step="5" max="0" min="-500"></td>
               <td>
-                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" title="Wenn aktiv, führt auch p=none (keine Durchsetzung) zum Punktabzug">
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;"
+                  title="Wenn aktiv, führt auch p=none (keine Durchsetzung) zum Punktabzug">
                   <input type="checkbox" id="chk_dmarc_penalizeNone"> <code>p=none</code> abstrafen
                 </label>
               </td>
@@ -142,12 +158,15 @@
               <td><input type="checkbox" id="chk_domainAge_enabled"></td>
               <td>
                 <strong>7. Domain-Alter / Neu registrierte Domains (RDAP)</strong>
-                <div class="muted" style="font-size:11px;">Prüft über RDAP (WHOIS-Nachfolger), ob die Domain erst kürzlich für Spam-Kampagnen registriert wurde.</div>
+                <div class="muted" style="font-size:11px;">Prüft über RDAP (WHOIS-Nachfolger), ob die Domain erst
+                  kürzlich für Spam-Kampagnen registriert wurde.</div>
               </td>
               <td><input type="number" id="chk_domainAge_score" step="5" max="0" min="-500"></td>
               <td>
-                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" title="Domains, die jünger als diese Anzahl an Tagen sind, erhalten den Punktabzug">
-                  Min. Tage: <input type="number" id="chk_domainAge_minDays" min="1" max="3650" step="5" style="width:65px;">
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;"
+                  title="Domains, die jünger als diese Anzahl an Tagen sind, erhalten den Punktabzug">
+                  Min. Tage: <input type="number" id="chk_domainAge_minDays" min="1" max="3650" step="5"
+                    style="width:65px;">
                 </label>
               </td>
             </tr>
@@ -155,7 +174,8 @@
               <td><input type="checkbox" id="chk_dnsbl_enabled"></td>
               <td>
                 <strong>8. DNS-Blacklist (Domain &amp; Server-IP)</strong>
-                <div class="muted" style="font-size:11px;">Prüft Domain und Einlieferungs-/A-Record-IP gegen öffentliche DNS-Blacklists (Nordspam, SpamCop, 0spam, Spamhaus).</div>
+                <div class="muted" style="font-size:11px;">Prüft Domain und Einlieferungs-/A-Record-IP gegen öffentliche
+                  DNS-Blacklists (Nordspam, SpamCop, 0spam, Spamhaus).</div>
               </td>
               <td><input type="number" id="chk_dnsbl_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
@@ -164,7 +184,9 @@
               <td><input type="checkbox" id="chk_spfIpMatch_enabled"></td>
               <td>
                 <strong>9. SPF-Absender-IP-Abgleich (Received-Header)</strong>
-                <div class="muted" style="font-size:11px;">Prüft anhand von <code>Authentication-Results</code> / <code>Received</code>-Headern, ob die sendende Server-IP wirklich durch den SPF-Record autorisiert ist.</div>
+                <div class="muted" style="font-size:11px;">Prüft anhand von <code>Authentication-Results</code> /
+                  <code>Received</code>-Headern, ob die sendende Server-IP wirklich durch den SPF-Record autorisiert
+                  ist.</div>
               </td>
               <td><input type="number" id="chk_spfIpMatch_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
@@ -178,12 +200,13 @@
         </div>
       </section>
 
-      <!-- Karte 2: Ordner-Prüfung & Live-Domain-Tester -->
+      <!-- Rechte Spalte: Ordner-Prüfung, Domain-Tester & Whitelist/Blacklist -->
       <div style="display:flex; flex-direction:column; gap:16px;">
         <section class="card">
           <h2>📂 Manuelle Ordner- &amp; Nachrichtenprüfung</h2>
           <p class="muted" style="margin-top:0;">
-            Du kannst jeden Ordner auch direkt in Thunderbird per <strong>Rechtsklick auf den Ordner</strong> oder <strong>Rechtsklick auf ausgewählte E-Mails</strong> prüfen lassen.
+            Du kannst jeden Ordner auch direkt in Thunderbird per <strong>Rechtsklick auf den Ordner</strong> oder
+            <strong>Rechtsklick auf ausgewählte E-Mails</strong> prüfen lassen.
           </p>
 
           <div style="display:flex; flex-direction:column; gap:10px;">
@@ -206,15 +229,58 @@
         <section class="card">
           <h2>🔬 Einzelne Domain / Absenderadresse live testen</h2>
           <p class="muted" style="margin-top:0;">
-            Teste sofort, welchen Score eine Domain oder Absenderadresse mit den aktuell gespeicherten Regeln erhält.
+            Teste sofort, welchen Score eine Domain oder Absenderadresse mit den aktuell gespeicherten Regeln (inkl.
+            Whitelist/Blacklist) erhält.
           </p>
           <div style="display:flex; flex-direction:column; gap:8px;">
             <div class="btn-row">
-              <input type="text" id="testDomainInput" placeholder="z.B. no-reply@snismirpel.com oder google.com" style="flex:1;">
+              <input type="text" id="testDomainInput" placeholder="z.B. no-reply@snismirpel.com oder google.com"
+                style="flex:1;">
               <button id="runDomainTestBtn" class="btn-primary">🔍 Domain prüfen</button>
             </div>
-            <input type="text" id="testDkimInput" placeholder="Optional: DKIM-Signature Header (z.B. v=1; a=rsa-sha256; d=beispiel.de; s=default; ...)">
+            <input type="text" id="testDkimInput"
+              placeholder="Optional: DKIM-Signature Header (z.B. v=1; a=rsa-sha256; d=beispiel.de; s=default; ...)">
             <div id="domainTestOutput" style="margin-top:4px;"></div>
+          </div>
+        </section>
+
+        <!-- Whitelist & Blacklist Karte -->
+        <section class="card">
+          <h2>📋 Whitelist &amp; Blacklist Verwaltung</h2>
+          <p class="muted" style="margin-top:0;">
+            Unterstützt einzelne E-Mail-Adressen (<code>name@domain.de</code>) sowie ganze Domains inkl. Subdomains
+            (<code>*.relusnelar.org</code> oder <code>relusnelar.org</code>). <strong>Die Whitelist hat immer Vorrang
+              vor der Blacklist.</strong>
+          </p>
+
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            <!-- Whitelist -->
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                <strong style="color:var(--success);">✅ Whitelist (Immer erlauben)</strong>
+                <span id="whitelistCount" class="muted" style="font-size:11px;">0 Einträge</span>
+              </div>
+              <div class="btn-row" style="margin-bottom:6px;">
+                <input type="text" id="whitelistInput" placeholder="z.B. *.wichtig.de oder info@partner.com"
+                  style="flex:1;">
+                <button id="addWhitelistBtn">➕ Zur Whitelist</button>
+              </div>
+              <div id="whitelistChips" class="rule-chips"></div>
+            </div>
+
+            <!-- Blacklist -->
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                <strong style="color:var(--danger);">⛔ Blacklist (Immer als Spam blockieren)</strong>
+                <span id="blacklistCount" class="muted" style="font-size:11px;">0 Einträge</span>
+              </div>
+              <div class="btn-row" style="margin-bottom:6px;">
+                <input type="text" id="blacklistInput" placeholder="z.B. *.relusnelar.org oder spammer@domain.xyz"
+                  style="flex:1;">
+                <button id="addBlacklistBtn">⛔ Zur Blacklist</button>
+              </div>
+              <div id="blacklistChips" class="rule-chips"></div>
+            </div>
           </div>
         </section>
       </div>
@@ -223,7 +289,9 @@
     <!-- Karte 3: Live-Diagnose der letzten X E-Mails -->
     <section class="card">
       <h2>
-        <span>📊 Live-Diagnose – Letzte bewertete E-Mails</span>
+        <span>📊 Live-Diagnose – Letzte bewertete E-Mails <span class="muted"
+            style="font-size:11.5px; font-weight:normal;">(Tipp: Rechtsklick oder Schnell-Buttons für
+            Whitelist/Blacklist)</span></span>
         <div class="btn-row" style="font-size:12px; font-weight:normal;">
           <span id="diagStats" class="muted">0 Einträge</span>
           <select id="logFilterStatus">
@@ -231,7 +299,8 @@
             <option value="spam">Nur erkannte Spam-Mails</option>
             <option value="ok">Nur unauffällige Mails (OK)</option>
           </select>
-          <input type="text" id="logSearchInput" placeholder="Suche nach Domain, Absender, Betreff…" style="width:240px;">
+          <input type="text" id="logSearchInput" placeholder="Suche nach Domain, Absender, Betreff…"
+            style="width:240px;">
           <button id="clearLogBtn" class="btn-danger">🗑️ Protokoll leeren</button>
         </div>
       </h2>
@@ -247,11 +316,12 @@
               <th>Einzel-Prüfungen (Hover für Details)</th>
               <th>Score</th>
               <th>Ergebnis / Aktion</th>
+              <th>Schnell-Regel (WL / BL)</th>
             </tr>
           </thead>
           <tbody id="diagTableBody">
             <tr>
-              <td colspan="7" class="muted" style="text-align:center; padding:24px;">Noch keine E-Mails geprüft.</td>
+              <td colspan="8" class="muted" style="text-align:center; padding:24px;">Noch keine E-Mails geprüft.</td>
             </tr>
           </tbody>
         </table>
@@ -259,6 +329,16 @@
     </section>
   </div>
 
+  <!-- Rechtsklick-Kontextmenü für die Historie -->
+  <div id="historyContextMenu" class="ctx-menu">
+    <div id="ctxMenuHeader" class="ctx-menu-header">Absender / Domain</div>
+    <button type="button" id="ctxWlEmail" class="ctx-menu-item">✅ E-Mail zur Whitelist hinzufügen</button>
+    <button type="button" id="ctxWlDomain" class="ctx-menu-item">✅ Domain (*.domain) zur Whitelist hinzufügen</button>
+    <button type="button" id="ctxBlEmail" class="ctx-menu-item">⛔ E-Mail zur Blacklist hinzufügen</button>
+    <button type="button" id="ctxBlDomain" class="ctx-menu-item">⛔ Domain (*.domain) zur Blacklist hinzufügen</button>
+  </div>
+
   <script src="options.js"></script>
 </body>
+
 </html>

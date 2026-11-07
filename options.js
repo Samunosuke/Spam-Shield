@@ -4,6 +4,8 @@ const DEFAULT_SETTINGS = {
     dryRun: false,
     monitorAllFolders: true,
     maxLogEntries: 100,
+    whitelist: [],
+    blacklist: [],
     checks: {
         domainExists: { enabled: true, score: -100, stopOnFail: true },
         dnssec: { enabled: true, score: -10 },
@@ -30,7 +32,9 @@ function mergeWithDefaults(saved) {
     for (const [key, defVal] of Object.entries(base.checks)) {
         mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
     }
-    return Object.assign({}, base, saved, { checks: mergedChecks });
+    const whitelist = Array.isArray(saved.whitelist) ? saved.whitelist : [];
+    const blacklist = Array.isArray(saved.blacklist) ? saved.blacklist : [];
+    return Object.assign({}, base, saved, { checks: mergedChecks, whitelist, blacklist });
 }
 
 /**
@@ -104,6 +108,17 @@ const chkFields = {
 const saveSettingsBtn = document.getElementById('saveSettingsBtn');
 const resetSettingsBtn = document.getElementById('resetSettingsBtn');
 
+// DOM elements – Whitelist & Blacklist
+const whitelistInput = document.getElementById('whitelistInput');
+const addWhitelistBtn = document.getElementById('addWhitelistBtn');
+const whitelistChips = document.getElementById('whitelistChips');
+const whitelistCount = document.getElementById('whitelistCount');
+
+const blacklistInput = document.getElementById('blacklistInput');
+const addBlacklistBtn = document.getElementById('addBlacklistBtn');
+const blacklistChips = document.getElementById('blacklistChips');
+const blacklistCount = document.getElementById('blacklistCount');
+
 // DOM elements – Folder Scan & Domain Tester
 const folderSelect = document.getElementById('folderSelect');
 const scanSelectedFolderBtn = document.getElementById('scanSelectedFolderBtn');
@@ -119,14 +134,23 @@ const testDkimInput = document.getElementById('testDkimInput');
 const runDomainTestBtn = document.getElementById('runDomainTestBtn');
 const domainTestOutput = document.getElementById('domainTestOutput');
 
-// DOM elements – Live Diagnostics Table
+// DOM elements – Live Diagnostics Table & Context Menu
 const diagStats = document.getElementById('diagStats');
 const logFilterStatus = document.getElementById('logFilterStatus');
 const logSearchInput = document.getElementById('logSearchInput');
 const clearLogBtn = document.getElementById('clearLogBtn');
 const diagTableBody = document.getElementById('diagTableBody');
 
+const historyContextMenu = document.getElementById('historyContextMenu');
+const ctxMenuHeader = document.getElementById('ctxMenuHeader');
+const ctxWlEmail = document.getElementById('ctxWlEmail');
+const ctxWlDomain = document.getElementById('ctxWlDomain');
+const ctxBlEmail = document.getElementById('ctxBlEmail');
+const ctxBlDomain = document.getElementById('ctxBlDomain');
+
+let currentSettingsState = cloneDefaults();
 let fullDiagnosticLog = [];
+let ctxMenuTarget = { email: '', domainPattern: '' };
 
 function escapeHtml(str) {
     return String(str || '')
@@ -142,11 +166,101 @@ function flashSaveStatus(msg) {
         if (saveStatus.textContent === msg) {
             saveStatus.textContent = '';
         }
-    }, 3000);
+    }, 3500);
+}
+
+function getEmailFromAuthorString(author) {
+    if (!author || typeof author !== 'string') return '';
+    const angleMatch = author.match(/<([^<>]+)>/);
+    const part = (angleMatch ? angleMatch[1] : author).trim();
+    if (!part.includes('@')) return '';
+    return part.replace(/^[<"'\s]+|[>"'\s]+$/g, '').toLowerCase();
+}
+
+function getRegistrableDomain(domain) {
+    if (!domain || domain === '(unbekannt)' || domain === '-') return '';
+    const parts = domain.toLowerCase().split('.').filter(Boolean);
+    if (parts.length <= 2) return parts.join('.');
+    const twoPartTlds = new Set([
+        'co.uk', 'org.uk', 'gov.uk', 'ac.uk',
+        'co.at', 'or.at', 'gv.at', 'ac.at',
+        'com.au', 'net.au', 'org.au',
+        'co.jp', 'ne.jp', 'or.jp',
+        'com.br', 'com.mx', 'co.nz', 'co.za', 'com.tr', 'com.pl', 'com.cn'
+    ]);
+    const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+    if (twoPartTlds.has(lastTwo) && parts.length >= 3) {
+        return parts.slice(-3).join('.');
+    }
+    return parts.slice(-2).join('.');
+}
+
+function renderRuleLists(settings) {
+    const wl = Array.isArray(settings.whitelist) ? settings.whitelist : [];
+    const bl = Array.isArray(settings.blacklist) ? settings.blacklist : [];
+
+    whitelistCount.textContent = `${wl.length} Einträge`;
+    blacklistCount.textContent = `${bl.length} Einträge`;
+
+    if (wl.length === 0) {
+        whitelistChips.innerHTML = '<span class="muted" style="font-size:11.5px;">Keine Einträge auf der Whitelist.</span>';
+    } else {
+        whitelistChips.innerHTML = wl.map(pattern => `
+          <span class="rule-chip whitelist-chip">
+            <span>${escapeHtml(pattern)}</span>
+            <button type="button" data-list="whitelist" data-pattern="${escapeHtml(pattern)}" title="Von Whitelist entfernen">✕</button>
+          </span>
+        `).join('');
+    }
+
+    if (bl.length === 0) {
+        blacklistChips.innerHTML = '<span class="muted" style="font-size:11.5px;">Keine Einträge auf der Blacklist.</span>';
+    } else {
+        blacklistChips.innerHTML = bl.map(pattern => `
+          <span class="rule-chip blacklist-chip">
+            <span>${escapeHtml(pattern)}</span>
+            <button type="button" data-list="blacklist" data-pattern="${escapeHtml(pattern)}" title="Von Blacklist entfernen">✕</button>
+          </span>
+        `).join('');
+    }
+}
+
+async function modifyListEntry(listType, op, rawPattern) {
+    const pattern = String(rawPattern || '').trim().toLowerCase();
+    if (!pattern) return;
+
+    const list = Array.isArray(currentSettingsState[listType]) ? [...currentSettingsState[listType]] : [];
+    if (op === 'add') {
+        if (!list.some(item => String(item).toLowerCase() === pattern)) {
+            list.unshift(pattern);
+        }
+    } else if (op === 'remove') {
+        const idx = list.findIndex(item => String(item).toLowerCase() === pattern);
+        if (idx !== -1) {
+            list.splice(idx, 1);
+        }
+    }
+
+    currentSettingsState[listType] = list;
+    if (messenger.storage && messenger.storage.local) {
+        await messenger.storage.local.set({ settings: currentSettingsState });
+    }
+    await sendToBackground({
+        action: 'MODIFY_LIST',
+        listType,
+        op,
+        pattern
+    });
+
+    renderRuleLists(currentSettingsState);
+    const listLabel = listType === 'whitelist' ? 'Whitelist' : 'Blacklist';
+    flashSaveStatus(op === 'add' ? `✓ "${pattern}" zur ${listLabel} hinzugefügt` : `✓ "${pattern}" von ${listLabel} entfernt`);
 }
 
 function populateSettingsForm(settings) {
     const merged = mergeWithDefaults(settings);
+    currentSettingsState = merged;
+
     spamThresholdInput.value = merged.spamThreshold ?? -50;
     dryRunInput.checked = Boolean(merged.dryRun);
     monitorAllFoldersInput.checked = merged.monitorAllFolders !== false;
@@ -176,6 +290,8 @@ function populateSettingsForm(settings) {
             fields.minAgeDays.value = cfg.minAgeDays ?? 90;
         }
     }
+
+    renderRuleLists(merged);
 }
 
 function collectSettingsFromForm() {
@@ -202,6 +318,8 @@ function collectSettingsFromForm() {
         dryRun: dryRunInput.checked,
         monitorAllFolders: monitorAllFoldersInput.checked,
         maxLogEntries: Math.max(10, Number(maxLogEntriesInput.value) || 100),
+        whitelist: Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [],
+        blacklist: Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [],
         checks
     };
 }
@@ -210,6 +328,13 @@ function renderCheckPills(checks) {
     if (!checks || Object.keys(checks).length === 0) {
         return '<span class="muted">–</span>';
     }
+    if (checks.whitelist) {
+        return `<div class="check-pills"><span class="check-pill pass" title="${escapeHtml(checks.whitelist.info || 'Whitelist')}">✓ Whitelist</span></div>`;
+    }
+    if (checks.blacklist) {
+        return `<div class="check-pills"><span class="check-pill fail" title="${escapeHtml(checks.blacklist.info || 'Blacklist')}">⛔ Blacklist (${checks.blacklist.scoreDelta})</span></div>`;
+    }
+
     const labels = [
         ['domainExists', 'Existenz'],
         ['dnssec', 'DNSSEC'],
@@ -267,7 +392,7 @@ function renderDiagnosticTable() {
     if (filtered.length === 0) {
         diagTableBody.innerHTML = `
           <tr>
-            <td colspan="7" class="muted" style="text-align:center; padding:24px;">
+            <td colspan="8" class="muted" style="text-align:center; padding:24px;">
               Keine passenden Einträge im Diagnose-Protokoll gefunden.
             </td>
           </tr>
@@ -280,6 +405,10 @@ function renderDiagnosticTable() {
         const timeStr = dt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const dateStr = dt.toLocaleDateString('de-DE');
 
+        const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
+        const rootDom = getRegistrableDomain(entry.domain) || (entry.domain !== '(unbekannt)' && entry.domain !== '-' ? entry.domain : '');
+        const domainWildcard = rootDom ? `*.${rootDom}` : '';
+
         let badgeClass = 'badge-ok';
         if (entry.actionTaken === 'moved') {
             badgeClass = 'badge-spam';
@@ -289,8 +418,17 @@ function renderDiagnosticTable() {
             badgeClass = 'badge-neutral';
         }
 
+        const quickButtonsHtml = (email || domainWildcard) ? `
+          <div class="mini-btn-group">
+            ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Whitelist hinzufügen">+WL Mail</button>` : ''}
+            ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Whitelist hinzufügen">+WL *.Dom</button>` : ''}
+            ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Blacklist hinzufügen">⛔BL Mail</button>` : ''}
+            ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Blacklist hinzufügen">⛔BL *.Dom</button>` : ''}
+          </div>
+        ` : '<span class="muted">–</span>';
+
         return `
-          <tr>
+          <tr data-row-email="${escapeHtml(email)}" data-row-domain="${escapeHtml(domainWildcard)}">
             <td style="white-space:nowrap;">
               <div><strong>${timeStr}</strong></div>
               <div class="muted" style="font-size:10.5px;">${dateStr}</div>
@@ -301,9 +439,9 @@ function renderDiagnosticTable() {
             </td>
             <td>
               <div><strong>${escapeHtml(entry.domain)}</strong></div>
-              <div class="muted truncate" style="font-size:11px; max-width:220px;" title="${escapeHtml(entry.author)}">${escapeHtml(entry.author)}</div>
+              <div class="muted truncate" style="font-size:11px; max-width:210px;" title="${escapeHtml(entry.author)}">${escapeHtml(entry.author)}</div>
             </td>
-            <td style="max-width:260px;">
+            <td style="max-width:240px;">
               <div title="${escapeHtml(entry.subject)}">${escapeHtml(entry.subject)}</div>
             </td>
             <td>${renderCheckPills(entry.checks)}</td>
@@ -314,6 +452,7 @@ function renderDiagnosticTable() {
             <td>
               <span class="badge ${badgeClass}">${escapeHtml(entry.actionLabel || entry.actionTaken)}</span>
             </td>
+            <td>${quickButtonsHtml}</td>
           </tr>
         `;
     }).join('');
@@ -360,7 +499,6 @@ async function loadFoldersDropdown() {
 
 async function loadState(includeSettingsForm = false) {
     try {
-        // First read directly from storage.local so it always works even if background page is asleep
         let storedSettings = null;
         let storedLog = null;
         if (messenger.storage && messenger.storage.local) {
@@ -374,6 +512,9 @@ async function loadState(includeSettingsForm = false) {
 
         if (includeSettingsForm) {
             populateSettingsForm(effectiveSettings);
+        } else {
+            currentSettingsState = effectiveSettings;
+            renderRuleLists(effectiveSettings);
         }
         cacheCountEl.textContent = (state && state.cacheSize) ?? 0;
         fullDiagnosticLog = (state && Array.isArray(state.diagnosticLog))
@@ -386,7 +527,7 @@ async function loadState(includeSettingsForm = false) {
     }
 }
 
-// Event listeners
+// Event listeners – Settings
 saveSettingsBtn.addEventListener('click', async () => {
     try {
         const newSettings = collectSettingsFromForm();
@@ -408,18 +549,120 @@ saveSettingsBtn.addEventListener('click', async () => {
 resetSettingsBtn.addEventListener('click', async () => {
     try {
         const defaults = cloneDefaults();
+        // Keep user's custom whitelist/blacklist when resetting check scores
+        defaults.whitelist = Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [];
+        defaults.blacklist = Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [];
         if (messenger.storage && messenger.storage.local) {
             await messenger.storage.local.set({ settings: defaults });
         }
-        await sendToBackground({ action: 'RESET_SETTINGS' });
+        await sendToBackground({
+            action: 'SAVE_SETTINGS',
+            settings: defaults
+        });
         populateSettingsForm(defaults);
-        flashSaveStatus('↺ Standardwerte wiederhergestellt');
+        flashSaveStatus('↺ Standard-Scores wiederhergestellt');
     } catch (err) {
         console.error('Reset settings error:', err);
         flashSaveStatus(`Fehler: ${err.message || err}`);
     }
 });
 
+// Event listeners – Whitelist & Blacklist inputs & chip removal
+addWhitelistBtn.addEventListener('click', async () => {
+    const val = whitelistInput.value.trim();
+    if (!val) return;
+    whitelistInput.value = '';
+    await modifyListEntry('whitelist', 'add', val);
+});
+
+whitelistInput.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        addWhitelistBtn.click();
+    }
+});
+
+addBlacklistBtn.addEventListener('click', async () => {
+    const val = blacklistInput.value.trim();
+    if (!val) return;
+    blacklistInput.value = '';
+    await modifyListEntry('blacklist', 'add', val);
+});
+
+blacklistInput.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        addBlacklistBtn.click();
+    }
+});
+
+whitelistChips.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-list="whitelist"]');
+    if (!btn) return;
+    await modifyListEntry('whitelist', 'remove', btn.getAttribute('data-pattern'));
+});
+
+blacklistChips.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-list="blacklist"]');
+    if (!btn) return;
+    await modifyListEntry('blacklist', 'remove', btn.getAttribute('data-pattern'));
+});
+
+// Event listeners – Quick buttons & Right-click context menu in History table
+diagTableBody.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-quick-list]');
+    if (!btn) return;
+    const listType = btn.getAttribute('data-quick-list');
+    const pattern = btn.getAttribute('data-quick-pattern');
+    await modifyListEntry(listType, 'add', pattern);
+});
+
+diagTableBody.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('tr[data-row-email], tr[data-row-domain]');
+    if (!row) return;
+    const email = row.getAttribute('data-row-email') || '';
+    const domainPattern = row.getAttribute('data-row-domain') || '';
+    if (!email && !domainPattern) return;
+
+    e.preventDefault();
+    ctxMenuTarget = { email, domainPattern };
+    ctxMenuHeader.textContent = email ? `${email} (${domainPattern})` : domainPattern;
+
+    ctxWlEmail.style.display = email ? 'flex' : 'none';
+    ctxWlEmail.textContent = `✅ E-Mail zur Whitelist (${email})`;
+
+    ctxWlDomain.style.display = domainPattern ? 'flex' : 'none';
+    ctxWlDomain.textContent = `✅ Domain zur Whitelist (${domainPattern})`;
+
+    ctxBlEmail.style.display = email ? 'flex' : 'none';
+    ctxBlEmail.textContent = `⛔ E-Mail zur Blacklist (${email})`;
+
+    ctxBlDomain.style.display = domainPattern ? 'flex' : 'none';
+    ctxBlDomain.textContent = `⛔ Domain zur Blacklist (${domainPattern})`;
+
+    const menuWidth = 310;
+    const menuHeight = 160;
+    const x = Math.min(e.clientX, window.innerWidth - menuWidth - 10);
+    const y = Math.min(e.clientY, window.innerHeight - menuHeight - 10);
+
+    historyContextMenu.style.left = `${Math.max(8, x)}px`;
+    historyContextMenu.style.top = `${Math.max(8, y)}px`;
+    historyContextMenu.classList.add('visible');
+});
+
+function hideContextMenu() {
+    historyContextMenu.classList.remove('visible');
+}
+
+document.addEventListener('click', hideContextMenu);
+window.addEventListener('scroll', hideContextMenu, true);
+
+ctxWlEmail.addEventListener('click', () => modifyListEntry('whitelist', 'add', ctxMenuTarget.email));
+ctxWlDomain.addEventListener('click', () => modifyListEntry('whitelist', 'add', ctxMenuTarget.domainPattern));
+ctxBlEmail.addEventListener('click', () => modifyListEntry('blacklist', 'add', ctxMenuTarget.email));
+ctxBlDomain.addEventListener('click', () => modifyListEntry('blacklist', 'add', ctxMenuTarget.domainPattern));
+
+// Event listeners – Cache, Folder Scan, Domain Tester
 clearCacheBtn.addEventListener('click', async () => {
     await sendToBackground({ action: 'CLEAR_DNS_CACHE' });
     cacheCountEl.textContent = '0';
@@ -474,7 +717,7 @@ runDomainTestBtn.addEventListener('click', async () => {
         return;
     }
 
-    domainTestOutput.innerHTML = '<span class="muted">Frage DNS, SPF, DKIM, DMARC, RDAP (Domain-Alter) &amp; DNSBL ab…</span>';
+    domainTestOutput.innerHTML = '<span class="muted">Prüfe Whitelist/Blacklist, DNS, SPF, DKIM, DMARC, RDAP (Domain-Alter) &amp; DNSBL…</span>';
     const res = await sendToBackground({
         action: 'TEST_DOMAIN',
         input,
@@ -485,12 +728,14 @@ runDomainTestBtn.addEventListener('click', async () => {
         return;
     }
     const badgeCls = res.isSpam ? 'badge-spam' : 'badge-ok';
-    const statusTxt = res.isSpam ? 'SPAM (unter Schwellenwert)' : 'OK (Vertrauenswürdig)';
+    const statusTxt = res.whitelisted
+        ? `WHITELIST (${res.matchedRule})`
+        : (res.blacklisted ? `BLACKLIST (${res.matchedRule})` : (res.isSpam ? 'SPAM (unter Schwellenwert)' : 'OK (Vertrauenswürdig)'));
     domainTestOutput.innerHTML = `
       <div style="padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
-          <strong>Domain: ${escapeHtml(res.domain)}</strong>
-          <span class="badge ${badgeCls}">Score: ${res.score} · ${statusTxt}</span>
+          <strong>Domain: ${escapeHtml(res.domain)}${res.senderEmail ? ` (${escapeHtml(res.senderEmail)})` : ''}</strong>
+          <span class="badge ${badgeCls}">Score: ${res.score} · ${escapeHtml(statusTxt)}</span>
         </div>
         ${renderCheckPills(res.checks)}
       </div>
@@ -518,7 +763,7 @@ if (messenger.runtime && messenger.runtime.onMessage) {
             if (msg.type === 'SCAN_COMPLETE') {
                 loadState(false);
             }
-        } else if (msg.type === 'LOG_UPDATED') {
+        } else if (msg.type === 'LOG_UPDATED' || msg.type === 'SETTINGS_UPDATED') {
             loadState(false);
         }
     });
@@ -526,9 +771,15 @@ if (messenger.runtime && messenger.runtime.onMessage) {
 
 if (messenger.storage && messenger.storage.onChanged) {
     messenger.storage.onChanged.addListener((changes, area) => {
-        if (area === 'local' && changes.diagnosticLog) {
-            fullDiagnosticLog = Array.isArray(changes.diagnosticLog.newValue) ? changes.diagnosticLog.newValue : [];
-            renderDiagnosticTable();
+        if (area === 'local') {
+            if (changes.diagnosticLog) {
+                fullDiagnosticLog = Array.isArray(changes.diagnosticLog.newValue) ? changes.diagnosticLog.newValue : [];
+                renderDiagnosticTable();
+            }
+            if (changes.settings && changes.settings.newValue) {
+                currentSettingsState = mergeWithDefaults(changes.settings.newValue);
+                renderRuleLists(currentSettingsState);
+            }
         }
     });
 }

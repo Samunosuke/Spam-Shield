@@ -10,6 +10,8 @@ Klassische Spam-Filter oder einfache DNS-Prüfungen scheitern häufig an moderne
 
 | Nr. | Prüfung | Beschreibung | Standard-Score bei Fehler |
 | :--- | :--- | :--- | :--- |
+| **0a** | **Whitelist (Höchste Priorität)** | Prüft, ob die Absender-E-Mail (`info@firma.de`) oder Domain (`*.firma.de` / `firma.de`) auf der Whitelist steht. **Zieht immer vor der Blacklist** und überspringt alle DNS-Abfragen. | `0` (Sofort **OK**) |
+| **0b** | **Blacklist** | Prüft, ob die Absender-E-Mail oder Domain (inkl. Subdomain-Wildcard wie `*.relusnelar.org`) auf der Blacklist steht. | `-1000` (Sofort **SPAM**) |
 | **1** | **Domain-Existenz (`A` / `AAAA` / `MX`)** | Prüft, ob die Domain im DNS überhaupt existiert (kein `NXDOMAIN`). Schlägt dies fehl, wird standardmäßig sofort abgebrochen. | `-100` |
 | **2** | **DNSSEC-Signatur (`AD`-Flag)** | Prüft, ob die DNS-Antwort kryptografisch per DNSSEC authentifiziert ist. | `-10` |
 | **3** | **MX-Record vorhanden** | Prüft, ob die Absender-Domain selbst über Mail-Exchange-Server verfügt. | `-20` |
@@ -34,16 +36,20 @@ Obwohl der Spammer für `snismirpel.com` gültige `A`-, `MX`-, `SPF`- und `DKIM`
 
 1. **Kontextmenü-Integration in Thunderbird**
    - **Rechtsklick auf einen Ordner** in der Ordnerliste -> *„Ordner auf Spam-Domains prüfen (Suke)“*
-   - **Rechtsklick auf markierte E-Mail(s)** in der Nachrichtenliste -> *„Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)“*
+   - **Rechtsklick auf markierte E-Mail(s)** in der Nachrichtenliste ->
+     - *„Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)“*
+     - *„Absender-E-Mail / Absender-Domain (`*.domain`) zur Whitelist hinzufügen“*
+     - *„Absender-E-Mail / Absender-Domain (`*.domain`) zur Blacklist hinzufügen & als Spam behandeln“*
 2. **Toolbar-Popup ([popup.html](file:///home/samonosuke/Workspace/AntiGravity/Suke.EmailValidationAddon/popup.html))**
    - Schnellzugriff zum Prüfen des aktuell geöffneten Ordners oder der markierten E-Mails.
    - Direkt-Umschalter für den **Evaluierungs- / Dry-Run-Modus**.
-   - Live-Fortschrittsbalken und Kompaktansicht der letzten 12 geprüften E-Mails.
+   - Live-Fortschrittsbalken und Kompaktansicht der letzten 12 geprüften E-Mails inkl. `+WL` / `⛔BL`-Schnellbuttons.
 3. **Konfigurations- & Live-Diagnose-Seite ([options.html](file:///home/samonosuke/Workspace/AntiGravity/Suke.EmailValidationAddon/options.html))**
-   - Alle 9 Prüfungen einzeln aktivierbar/deaktivierbar und im Score frei einstellbar.
+   - **Whitelist- & Blacklist-Verwaltung**: Unterstützt einzelne E-Mail-Adressen (`user@domain.tld`) sowie ganze Domains inkl. Subdomains (`*.relusnelar.org` oder `relusnelar.org`). Die Whitelist hat immer Vorrang vor der Blacklist.
+   - Alle 9 DNS-/Reputations-Prüfungen einzeln aktivierbar/deaktivierbar und im Score frei einstellbar.
    - Einstellbarer **Spam-Schwellenwert** (Standard: `< -50`) und **Dry-Run-Modus** (nur bewerten & loggen, ohne E-Mails zu verschieben).
-   - **Live-Domain-Tester**: Beliebige Domain oder E-Mail-Adresse (optional mit `DKIM-Signature`-Header) live gegen alle aktivierten Regeln testen.
-   - **Live-Diagnose-Tabelle**: Zeigt die letzten *X* (Standard: 100) bewerteten E-Mails mit allen 9 Einzel-Badges, detaillierten Tooltips (Hover), Suchfunktion und Statusfilter.
+   - **Live-Domain-Tester**: Beliebige Domain oder E-Mail-Adresse (optional mit `DKIM-Signature`-Header) live gegen alle aktivierten Regeln (inkl. Whitelist/Blacklist) testen.
+   - **Live-Diagnose-Tabelle**: Zeigt die letzten *X* (Standard: 100) bewerteten E-Mails mit Einzel-Badges, detaillierten Tooltips (Hover), Suchfunktion, Statusfilter sowie **Schnell-Buttons (`+WL Mail`, `+WL *.Dom`, `⛔BL Mail`, `⛔BL *.Dom`) und Rechtsklick-Kontextmenü** direkt in der Historie.
 
 ---
 

@@ -35,6 +35,8 @@ const DEFAULT_SETTINGS = {
     dryRun: false,
     monitorAllFolders: true,
     maxLogEntries: 100,
+    whitelist: [],
+    blacklist: [],
     checks: {
         domainExists: {
             enabled: true,
@@ -126,7 +128,48 @@ function setupContextMenus() {
             title: 'Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)',
             contexts: ['message_list']
         });
+
+        messenger.menus.create({
+            id: 'suke-whitelist-email',
+            title: 'Absender-E-Mail zur Whitelist hinzufügen (Suke)',
+            contexts: ['message_list']
+        });
+
+        messenger.menus.create({
+            id: 'suke-whitelist-domain',
+            title: 'Absender-Domain (*.domain) zur Whitelist hinzufügen (Suke)',
+            contexts: ['message_list']
+        });
+
+        messenger.menus.create({
+            id: 'suke-blacklist-email',
+            title: 'Absender-E-Mail zur Blacklist hinzufügen & als Spam behandeln (Suke)',
+            contexts: ['message_list']
+        });
+
+        messenger.menus.create({
+            id: 'suke-blacklist-domain',
+            title: 'Absender-Domain (*.domain) zur Blacklist hinzufügen & als Spam behandeln (Suke)',
+            contexts: ['message_list']
+        });
     }).catch(err => console.warn('Failed to create context menus:', err));
+}
+
+async function addPatternsToList(listType, patterns) {
+    const current = await getSettings();
+    const list = Array.isArray(current[listType]) ? [...current[listType]] : [];
+    for (const raw of patterns) {
+        const p = String(raw || '').trim().toLowerCase();
+        if (p && !list.some(item => String(item).toLowerCase() === p)) {
+            list.unshift(p);
+        }
+    }
+    current[listType] = list;
+    if (messenger.storage && messenger.storage.local) {
+        await messenger.storage.local.set({ settings: current });
+    }
+    notifyUI({ type: 'SETTINGS_UPDATED', settings: current });
+    return current;
 }
 
 if (messenger.menus && messenger.menus.onClicked) {
@@ -146,19 +189,49 @@ if (messenger.menus && messenger.menus.onClicked) {
             for (const folder of folders) {
                 await scanFolder(folder, 'context-folder');
             }
-        } else if (info.menuItemId === 'suke-validate-messages') {
-            let msgList = info.selectedMessages;
-            if (!msgList && messenger.mailTabs && tab) {
-                msgList = await messenger.mailTabs.getSelectedMessages(tab.id);
+            return;
+        }
+
+        let msgList = info.selectedMessages;
+        if (!msgList && messenger.mailTabs && tab) {
+            msgList = await messenger.mailTabs.getSelectedMessages(tab.id);
+        }
+        let fallbackFolder = info.displayedFolder || null;
+        if (!fallbackFolder && messenger.mailTabs && tab) {
+            const mailTab = await messenger.mailTabs.get(tab.id).catch(() => null);
+            if (mailTab && mailTab.displayedFolder) {
+                fallbackFolder = mailTab.displayedFolder;
             }
-            let fallbackFolder = info.displayedFolder || null;
-            if (!fallbackFolder && messenger.mailTabs && tab) {
-                const mailTab = await messenger.mailTabs.get(tab.id).catch(() => null);
-                if (mailTab && mailTab.displayedFolder) {
-                    fallbackFolder = mailTab.displayedFolder;
+        }
+
+        if (info.menuItemId === 'suke-validate-messages') {
+            if (msgList) {
+                await scanMessageList(msgList, fallbackFolder, 'context-messages');
+            }
+        } else if (
+            info.menuItemId === 'suke-whitelist-email' ||
+            info.menuItemId === 'suke-whitelist-domain' ||
+            info.menuItemId === 'suke-blacklist-email' ||
+            info.menuItemId === 'suke-blacklist-domain'
+        ) {
+            if (!msgList) return;
+            const isWhitelist = info.menuItemId.startsWith('suke-whitelist');
+            const isDomainMode = info.menuItemId.endsWith('-domain');
+            const patterns = [];
+
+            for await (const msg of iterateMessagePages(msgList)) {
+                if (isDomainMode) {
+                    const dom = await extractDomainFromAuthor(msg.author || '');
+                    const rootDom = getRegistrableDomain(dom) || dom;
+                    if (rootDom) patterns.push(`*.${rootDom}`);
+                } else {
+                    const email = await extractEmailFromAuthor(msg.author || '');
+                    if (email) patterns.push(email);
                 }
             }
-            if (msgList) {
+
+            if (patterns.length > 0) {
+                await addPatternsToList(isWhitelist ? 'whitelist' : 'blacklist', patterns);
                 await scanMessageList(msgList, fallbackFolder, 'context-messages');
             }
         }
@@ -184,7 +257,9 @@ async function getSettings() {
         for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS.checks)) {
             mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
         }
-        return Object.assign({}, cloneDefaults(), saved, { checks: mergedChecks });
+        const whitelist = Array.isArray(saved.whitelist) ? saved.whitelist : [];
+        const blacklist = Array.isArray(saved.blacklist) ? saved.blacklist : [];
+        return Object.assign({}, cloneDefaults(), saved, { checks: mergedChecks, whitelist, blacklist });
     } catch (err) {
         console.warn('Failed to load settings from storage, using defaults:', err);
         return cloneDefaults();
@@ -311,7 +386,8 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
 
     try {
         const senderAddress = message.author || '';
-        const domain = await extractDomainFromAuthor(senderAddress);
+        const senderEmail = await extractEmailFromAuthor(senderAddress);
+        const domain = senderEmail ? getDomainFromAddress(senderEmail) : await extractDomainFromAuthor(senderAddress);
         if (!domain) {
             console.warn(`Could not extract domain from sender address: ${senderAddress}`);
             await appendDiagnosticLog({
@@ -319,6 +395,7 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
                 timestamp: Date.now(),
                 messageId: message.id,
                 author: senderAddress,
+                senderEmail: senderEmail || '',
                 domain: '(unbekannt)',
                 subject: message.subject || '(Kein Betreff)',
                 folderName,
@@ -339,24 +416,28 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             : (await messenger.messages.getFull(message.id)).headers;
         const dkimSig = headers ? headers['dkim-signature'] : null;
 
-        // Perform detailed domain validation (passing full headers for SPF-IP / Received inspection)
-        const result = await validateDomainDetailed(domain, dkimSig, settings, headers);
+        // Perform detailed domain validation (passing full headers and senderEmail for Whitelist/Blacklist & SPF-IP)
+        const result = await validateDomainDetailed(domain, dkimSig, settings, headers, senderEmail);
         const { score, isSpam, checks } = result;
         console.log(`Validation score for ${domain} (messageID: ${message.id}): ${score} (threshold: ${settings.spamThreshold})`);
 
         let actionTaken = 'passed';
-        let actionLabel = 'OK';
+        let actionLabel = result.whitelisted ? `Whitelist (${result.matchedRule})` : 'OK';
 
         if (isSpam) {
             if (settings.dryRun) {
                 console.log(`[DRY-RUN SPAM] Would mark message from ${message.author} (score: ${score}) as Junk.`);
                 actionTaken = 'dry-run';
-                actionLabel = 'Spam (Dry-Run – nicht verschoben)';
+                actionLabel = result.blacklisted
+                    ? `Blacklist (${result.matchedRule}) · Dry-Run`
+                    : 'Spam (Dry-Run – nicht verschoben)';
             } else {
                 console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
                 await markAndMoveToSpam(message, targetFolder);
                 actionTaken = 'moved';
-                actionLabel = 'Als Spam markiert & verschoben';
+                actionLabel = result.blacklisted
+                    ? `Blacklist (${result.matchedRule}) · Verschoben`
+                    : 'Als Spam markiert & verschoben';
             }
         }
 
@@ -365,6 +446,7 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             timestamp: Date.now(),
             messageId: message.id,
             author: senderAddress,
+            senderEmail: senderEmail || '',
             domain,
             subject: message.subject || '(Kein Betreff)',
             folderName,
@@ -518,6 +600,107 @@ async function markAndMoveToSpam(message, sourceFolder) {
 }
 
 /**
+ * Extracts the clean email address (e.g. "user@domain.tld") from a sender string
+ * @param {string} senderAddress
+ * @returns {Promise<string|null>}
+ */
+async function extractEmailFromAuthor(senderAddress) {
+    if (!senderAddress || typeof senderAddress !== 'string') {
+        return null;
+    }
+
+    if (messenger.messengerUtilities && typeof messenger.messengerUtilities.parseMailboxString === 'function') {
+        try {
+            const parsed = await messenger.messengerUtilities.parseMailboxString(senderAddress);
+            if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].email) {
+                return getEmailFromAddress(parsed[0].email);
+            }
+        } catch (err) {
+            console.warn('parseMailboxString failed, falling back to manual email parsing:', err);
+        }
+    }
+
+    return getEmailFromAddress(senderAddress);
+}
+
+/**
+ * Synchronous helper to extract clean email address from RFC 5322 author string
+ * @param {string} senderAddress
+ * @returns {string|null}
+ */
+function getEmailFromAddress(senderAddress) {
+    if (!senderAddress || typeof senderAddress !== 'string') {
+        return null;
+    }
+    const angleMatch = senderAddress.match(/<([^<>]+)>/);
+    const addressPart = (angleMatch ? angleMatch[1] : senderAddress).trim();
+    if (!addressPart.includes('@')) {
+        return null;
+    }
+    return addressPart.replace(/^[<"'\s]+|[>"'\s]+$/g, '').toLowerCase() || null;
+}
+
+/**
+ * Checks whether a sender email or domain matches any pattern in the given list (Whitelist / Blacklist).
+ * Supports:
+ * - Exact email addresses (e.g. "info@example.com")
+ * - Wildcard email addresses (e.g. "*@*.relusnelar.org")
+ * - Wildcard domains (e.g. "*.relusnelar.org" -> matches "relusnelar.org" and "sub.relusnelar.org")
+ * - Plain domains (e.g. "relusnelar.org" -> matches "relusnelar.org" and "*.relusnelar.org")
+ * @param {string|null} email
+ * @param {string|null} domain
+ * @param {string[]} list
+ * @returns {string|null} the matched rule or null
+ */
+function matchListRule(email, domain, list) {
+    if (!Array.isArray(list) || list.length === 0) {
+        return null;
+    }
+
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanDomain = (domain || getDomainFromAddress(cleanEmail) || '').trim().toLowerCase();
+
+    function wildcardToRegExp(pattern) {
+        const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+        return new RegExp(`^${escaped}$`, 'i');
+    }
+
+    for (const rawRule of list) {
+        if (!rawRule || typeof rawRule !== 'string') continue;
+        const rule = rawRule.trim().toLowerCase();
+        if (!rule) continue;
+
+        if (rule.includes('@')) {
+            if (!cleanEmail) continue;
+            if (rule === cleanEmail) {
+                return rawRule.trim();
+            }
+            if (rule.includes('*') && wildcardToRegExp(rule).test(cleanEmail)) {
+                return rawRule.trim();
+            }
+        } else {
+            if (!cleanDomain) continue;
+            if (rule.startsWith('*.')) {
+                const baseDom = rule.slice(2);
+                if (baseDom && (cleanDomain === baseDom || cleanDomain.endsWith(`.${baseDom}`))) {
+                    return rawRule.trim();
+                }
+            } else if (rule.includes('*')) {
+                if (wildcardToRegExp(rule).test(cleanDomain)) {
+                    return rawRule.trim();
+                }
+            } else {
+                if (cleanDomain === rule || cleanDomain.endsWith(`.${rule}`)) {
+                    return rawRule.trim();
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
  * Extracts the sender domain using Thunderbird's RFC 5322 parser (messengerUtilities.parseMailboxString)
  * with a fallback to manual string parsing.
  * @param {string} senderAddress 
@@ -599,13 +782,52 @@ function getRegistrableDomain(domain) {
  * @param {string[]|null} dkimSig the dkim-signature header array
  * @param {object} [customSettings] optional settings object (loaded from storage if omitted)
  * @param {object|null} [headers] optional full message headers dictionary (for Received / SPF-IP verification)
- * @returns {Promise<{ score: number, isSpam: boolean, checks: object }>}
+ * @param {string|null} [senderEmail] optional full sender email address for Whitelist / Blacklist matching
+ * @returns {Promise<{ score: number, isSpam: boolean, checks: object, whitelisted?: boolean, blacklisted?: boolean, matchedRule?: string }>}
  */
-async function validateDomainDetailed(domain, dkimSig, customSettings = null, headers = null) {
+async function validateDomainDetailed(domain, dkimSig, customSettings = null, headers = null, senderEmail = null) {
     const settings = customSettings || await getSettings();
     const cfg = settings.checks || DEFAULT_SETTINGS.checks;
     const checks = {};
     let score = 0;
+
+    // 0a. Whitelist check (Whitelist always takes precedence over Blacklist and all DNS checks)
+    const whiteMatch = matchListRule(senderEmail, domain, settings.whitelist);
+    if (whiteMatch) {
+        console.log(`Sender ${senderEmail || domain} matched Whitelist rule: ${whiteMatch}`);
+        checks.whitelist = {
+            enabled: true,
+            passed: true,
+            scoreDelta: 0,
+            info: `Freigegeben durch Whitelist-Regel: ${whiteMatch}`
+        };
+        return {
+            score: 0,
+            isSpam: false,
+            whitelisted: true,
+            matchedRule: whiteMatch,
+            checks
+        };
+    }
+
+    // 0b. Blacklist check
+    const blackMatch = matchListRule(senderEmail, domain, settings.blacklist);
+    if (blackMatch) {
+        console.log(`Sender ${senderEmail || domain} matched Blacklist rule: ${blackMatch}`);
+        checks.blacklist = {
+            enabled: true,
+            passed: false,
+            scoreDelta: -1000,
+            info: `Gesperrt durch Blacklist-Regel: ${blackMatch}`
+        };
+        return {
+            score: -1000,
+            isSpam: true,
+            blacklisted: true,
+            matchedRule: blackMatch,
+            checks
+        };
+    }
 
     // Perform A and MX record lookups in parallel
     const [aRecordData, mxRecordData] = await Promise.all([
@@ -1505,13 +1727,42 @@ if (messenger.runtime && messenger.runtime.onMessage) {
 
                 case 'TEST_DOMAIN': {
                     const rawInput = (request.input || '').trim();
+                    const senderEmail = rawInput.includes('@') ? await extractEmailFromAuthor(rawInput) : null;
                     const domain = rawInput.includes('@') ? await extractDomainFromAuthor(rawInput) : rawInput.toLowerCase();
                     if (!domain) {
                         return { error: 'Bitte eine gültige Domain oder E-Mail-Adresse eingeben.' };
                     }
                     const dkimHeaders = request.dkimHeader ? [request.dkimHeader] : null;
-                    const result = await validateDomainDetailed(domain, dkimHeaders);
-                    return { domain, ...result };
+                    const result = await validateDomainDetailed(domain, dkimHeaders, null, null, senderEmail);
+                    return { domain, senderEmail, ...result };
+                }
+
+                case 'MODIFY_LIST': {
+                    const listType = request.listType === 'whitelist' ? 'whitelist' : 'blacklist';
+                    const op = request.op || 'add'; // 'add' | 'remove'
+                    const pattern = String(request.pattern || '').trim().toLowerCase();
+                    if (!pattern) {
+                        return { error: 'Kein gültiger Eintrag angegeben.' };
+                    }
+
+                    const current = await getSettings();
+                    const list = Array.isArray(current[listType]) ? [...current[listType]] : [];
+
+                    if (op === 'add') {
+                        if (!list.some(item => String(item).toLowerCase() === pattern)) {
+                            list.unshift(pattern);
+                        }
+                    } else if (op === 'remove') {
+                        const idx = list.findIndex(item => String(item).toLowerCase() === pattern);
+                        if (idx !== -1) {
+                            list.splice(idx, 1);
+                        }
+                    }
+
+                    current[listType] = list;
+                    await messenger.storage.local.set({ settings: current });
+                    notifyUI({ type: 'SETTINGS_UPDATED', settings: current });
+                    return { success: true, settings: JSON.parse(JSON.stringify(current)) };
                 }
 
                 default:

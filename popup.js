@@ -48,6 +48,15 @@ function updateScanBanner(scanState) {
 
 function renderCheckPills(checks) {
     if (!checks) return '';
+    if (checks.whitelist) {
+        const info = (checks.whitelist.info || 'Whitelist').replace(/"/g, '&quot;');
+        return `<span class="check-pill pass" title="${info}">✓ Whitelist</span>`;
+    }
+    if (checks.blacklist) {
+        const info = (checks.blacklist.info || 'Blacklist').replace(/"/g, '&quot;');
+        return `<span class="check-pill fail" title="${info}">⛔ Blacklist</span>`;
+    }
+
     const labels = [
         ['domainExists', 'DNS'],
         ['dnssec', 'DNSSEC'],
@@ -79,6 +88,32 @@ function escapeHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
+function getEmailFromAuthorString(author) {
+    if (!author || typeof author !== 'string') return '';
+    const angleMatch = author.match(/<([^<>]+)>/);
+    const part = (angleMatch ? angleMatch[1] : author).trim();
+    if (!part.includes('@')) return '';
+    return part.replace(/^[<"'\s]+|[>"'\s]+$/g, '').toLowerCase();
+}
+
+function getRegistrableDomain(domain) {
+    if (!domain || domain === '(unbekannt)' || domain === '-') return '';
+    const parts = domain.toLowerCase().split('.').filter(Boolean);
+    if (parts.length <= 2) return parts.join('.');
+    const twoPartTlds = new Set([
+        'co.uk', 'org.uk', 'gov.uk', 'ac.uk',
+        'co.at', 'or.at', 'gv.at', 'ac.at',
+        'com.au', 'net.au', 'org.au',
+        'co.jp', 'ne.jp', 'or.jp',
+        'com.br', 'com.mx', 'co.nz', 'co.za', 'com.tr', 'com.pl', 'com.cn'
+    ]);
+    const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+    if (twoPartTlds.has(lastTwo) && parts.length >= 3) {
+        return parts.slice(-3).join('.');
+    }
+    return parts.slice(-2).join('.');
+}
+
 function renderPopupLog(log) {
     if (!Array.isArray(log) || log.length === 0) {
         popupLogList.innerHTML = '<div class="muted" style="padding:16px; text-align:center;">Noch keine E-Mails in dieser Sitzung bewertet.</div>';
@@ -92,6 +127,10 @@ function renderPopupLog(log) {
     const recent = log.slice(0, 12);
     popupLogList.innerHTML = recent.map(entry => {
         const timeStr = new Date(entry.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
+        const rootDom = getRegistrableDomain(entry.domain) || (entry.domain !== '(unbekannt)' && entry.domain !== '-' ? entry.domain : '');
+        const domainWildcard = rootDom ? `*.${rootDom}` : '';
+
         let badgeClass = 'badge-ok';
         let badgeText = `OK (${entry.score})`;
         if (entry.actionTaken === 'moved') {
@@ -116,10 +155,33 @@ function renderPopupLog(log) {
               <div class="check-pills">${renderCheckPills(entry.checks)}</div>
               <span class="muted" style="font-size:10.5px; white-space:nowrap;">${escapeHtml(entry.folderName)} · ${timeStr}</span>
             </div>
+            <div style="display:flex; justify-content:flex-end; gap:4px; margin-top:2px;">
+              ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Whitelist">+WL Mail</button>` : ''}
+              ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Whitelist">+WL *.Dom</button>` : ''}
+              ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="E-Mail (${escapeHtml(email)}) zur Blacklist">⛔BL Mail</button>` : ''}
+              ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="Domain (${escapeHtml(domainWildcard)}) zur Blacklist">⛔BL *.Dom</button>` : ''}
+            </div>
           </div>
         `;
     }).join('');
 }
+
+popupLogList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-quick-list]');
+    if (!btn) return;
+    const listType = btn.getAttribute('data-quick-list');
+    const pattern = String(btn.getAttribute('data-quick-pattern') || '').trim().toLowerCase();
+    if (!pattern) return;
+
+    await sendToBackground({
+        action: 'MODIFY_LIST',
+        listType,
+        op: 'add',
+        pattern
+    });
+    const label = listType === 'whitelist' ? 'Whitelist' : 'Blacklist';
+    showStatus(`✓ "${pattern}" zur ${label} hinzugefügt.`);
+});
 
 async function refreshState() {
     try {
@@ -188,7 +250,7 @@ if (messenger.runtime && messenger.runtime.onMessage) {
             if (msg.type === 'SCAN_COMPLETE') {
                 refreshState();
             }
-        } else if (msg.type === 'LOG_UPDATED') {
+        } else if (msg.type === 'LOG_UPDATED' || msg.type === 'SETTINGS_UPDATED') {
             refreshState();
         }
     });
