@@ -15,7 +15,8 @@ const DEFAULT_SETTINGS = {
         dmarc: { enabled: true, score: -20, penalizeNone: true },
         domainAge: { enabled: true, score: -40, minAgeDays: 90 },
         dnsbl: { enabled: true, score: -80 },
-        spfIpMatch: { enabled: true, score: -40 }
+        spfIpMatch: { enabled: true, score: -40 },
+        spamKitFingerprint: { enabled: true, score: -80, fetchWebsite: true }
     }
 };
 
@@ -102,6 +103,11 @@ const chkFields = {
     spfIpMatch: {
         enabled: document.getElementById('chk_spfIpMatch_enabled'),
         score: document.getElementById('chk_spfIpMatch_score')
+    },
+    spamKitFingerprint: {
+        enabled: document.getElementById('chk_spamKitFingerprint_enabled'),
+        score: document.getElementById('chk_spamKitFingerprint_score'),
+        fetchWebsite: document.getElementById('chk_spamKitFingerprint_fetchWebsite')
     }
 };
 
@@ -289,6 +295,9 @@ function populateSettingsForm(settings) {
         if (fields.minAgeDays) {
             fields.minAgeDays.value = cfg.minAgeDays ?? 90;
         }
+        if (fields.fetchWebsite) {
+            fields.fetchWebsite.checked = cfg.fetchWebsite !== false;
+        }
     }
 
     renderRuleLists(merged);
@@ -310,6 +319,9 @@ function collectSettingsFromForm() {
         }
         if (fields.minAgeDays) {
             checks[key].minAgeDays = Math.max(1, Number(fields.minAgeDays.value) || 90);
+        }
+        if (fields.fetchWebsite) {
+            checks[key].fetchWebsite = fields.fetchWebsite.checked;
         }
     }
 
@@ -344,7 +356,8 @@ function renderCheckPills(checks) {
         ['dmarc', 'DMARC'],
         ['domainAge', 'Alter'],
         ['dnsbl', 'DNSBL'],
-        ['spfIpMatch', 'SPF-IP']
+        ['spfIpMatch', 'SPF-IP'],
+        ['spamKitFingerprint', 'Spam-Kit']
     ];
     return `<div class="check-pills">${labels.map(([key, label]) => {
         const c = checks[key];

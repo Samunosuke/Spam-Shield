@@ -6,7 +6,7 @@ Dieses Add-on erweitert Thunderbird um eine automatische sowie manuell ausführb
 
 ## Hintergrund & Funktionsweise
 
-Klassische Spam-Filter oder einfache DNS-Prüfungen scheitern häufig an modernen Spam-Wellen: Spammer registrieren heute automatisiert günstige Wegwerf-Domains (z. B. `snismirpel.com`) und richten dafür gültige `A`-, `MX`-, `SPF`- und `DKIM`-Einträge ein. Da in der Browser-/Thunderbird-WebExtension-Sandbox aus Sicherheitsgründen keine echten ICMP-Pings oder Raw-TCP-Sockets möglich sind, kombiniert dieses Add-on **9 mehrstufige Prüfungen über DNS-over-HTTPS (DoH), RDAP (WHOIS-Nachfolger) und E-Mail-Header-Analyse**:
+Klassische Spam-Filter oder einfache DNS-Prüfungen scheitern häufig an modernen Spam-Wellen: Spammer registrieren heute automatisiert günstige Wegwerf-Domains (z. B. `snismirpel.com`, `esourl.org`, `gottlieb.relusnelar.org`, `logicvanta.info`, `denesik.heatrica.shop`, `initives.org`), richten dafür per Skript gültige `A`-, `MX`-, `SPF`- und `DKIM`-Einträge ein und schalten identische Alibi-Websites (automatisierte RSS-News-Scraper) live. Da in der Browser-/Thunderbird-WebExtension-Sandbox aus Sicherheitsgründen keine echten ICMP-Pings oder Raw-TCP-Sockets möglich sind, kombiniert dieses Add-on **10 mehrstufige Prüfungen über DNS-over-HTTPS (DoH), RDAP (WHOIS-Nachfolger), HTTP/HTTPS-Fingerprinting und E-Mail-Header-Analyse**:
 
 | Nr. | Prüfung | Beschreibung | Standard-Score bei Fehler |
 | :--- | :--- | :--- | :--- |
@@ -18,9 +18,10 @@ Klassische Spam-Filter oder einfache DNS-Prüfungen scheitern häufig an moderne
 | **4** | **SPF-Record vorhanden (`v=spf1`)** | Prüft, ob ein gültiger SPF-TXT-Eintrag für die Domain veröffentlicht wurde. | `-50` |
 | **5** | **DKIM-Signatur & DNS-Key (`s=` / `d=`)** | Liest Selektor (`s=`) und Signing-Domain (`d=`) aus dem `DKIM-Signature`-Header und prüft den Public-Key unter `<selector>._domainkey.<domain>`. | `-20` |
 | **6** | **DMARC-Richtlinie (`_dmarc`)** | Prüft, ob ein DMARC-Record existiert und eine aktive Richtlinie (`p=quarantine` oder `p=reject`) durchsetzt. Wegwerf-Spam-Domains nutzen meist kein DMARC oder nur `p=none` (keine Durchsetzung). | `-20` |
-| **7** | **Domain-Alter / NRD via RDAP** | Fragt über das offizielle RDAP-Protokoll (`rdap.org`) das Registrierungsdatum der Hauptdomain ab. Ist die Domain jünger als das konfigurierte Mindestalter (Standard: **90 Tage**), gilt sie als *Newly Registered Domain (NRD)*. *(Unterstützt eine Länder-TLD wie `.de` kein öffentliches RDAP, erfolgt kein Abzug).* | `-40` |
+| **7** | **Domain-Alter / NRD via RDAP** | Fragt über das offizielle IANA-RDAP-Bootstrap-Verzeichnis das Registrierungsdatum der Hauptdomain ab. Ist die Domain jünger als das konfigurierte Mindestalter (Standard: **90 Tage**), gilt sie als *Newly Registered Domain (NRD)*. *(Unterstützt eine Länder-TLD wie `.de` kein öffentliches RDAP, erfolgt kein Abzug).* | `-40` |
 | **8** | **DNS-Blacklist (Domain & Server-IP)** | Prüft die Hauptdomain (`dbl.nordspam.com`, `dbl.spamhaus.org`) sowie die Einlieferungs-/A-Record-IPv4 (`bl.nordspam.com`, `bl.spamcop.net`, `bl.0spam.org`) auf bekannte Spam-Einträge. | `-80` |
 | **9** | **SPF-Absender-IP-Abgleich (`Received`)** | Wertet `Authentication-Results` / `Received-SPF` sowie die tatsächliche Einlieferungs-IP aus den `Received`-Headern gegen die im SPF-Record freigegebenen IPv4-Adressen aus. | `-40` |
+| **10** | **Spam-Baukasten & Fake-Website-Fingerabdruck** | Erkennt automatisiert provisionierte Spam-Domains anhand kombinierter DNS-Generator-Muster (`p=none; rua=mailto:postmaster@...; ruf=mailto:dmarc@...`, Self-MX `10 <domain>` + Raw-IP-SPF `v=spf1 a mx ip4:... -all`, Snowshoe-Subnetz-IPs, Wegwerf-Subdomains) sowie identischer Alibi-/Scraper-Websites (`assets/ayt/css/main.css`, NYT-RSS-Scraper, `Powered by: <domain>`). | `-80` |
 
 ### Beispielrechnung an einer modernen Spam-Domain (`snismirpel.com`)
 Obwohl der Spammer für `snismirpel.com` gültige `A`-, `MX`-, `SPF`- und `DKIM`-Records eingerichtet hat:

@@ -169,6 +169,20 @@
               <td><input type="number" id="chk_spfIpMatch_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
             </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_spamKitFingerprint_enabled"></td>
+              <td>
+                <strong>10. Spam-Baukasten &amp; Fake-Website-Fingerabdruck</strong>
+                <div class="muted" style="font-size:11px;">Erkennt automatisiert generierte Spam-Domains anhand typischer Generator-DNS-Muster (Self-MX <code>10 &lt;domain&gt;</code> + Raw-IP-SPF + Generator-DMARC, Snowshoe-Subdomains) sowie identischer Alibi-/Scraper-Websites (<code>assets/ayt/css/main.css</code>, NYT-RSS-Scraper).</div>
+              </td>
+              <td><input type="number" id="chk_spamKitFingerprint_score" step="5" max="0" min="-500"></td>
+              <td>
+                <label class="checkbox-label" style="font-size:11px;">
+                  <input type="checkbox" id="chk_spamKitFingerprint_fetchWebsite">
+                  Auch Website-HTML auf Fake-Template prüfen
+                </label>
+              </td>
+            </tr>
           </tbody>
         </table>
 

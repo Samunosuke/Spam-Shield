@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Suke.EmailValidationAddon",
-  "version": "1.4",
-  "description": "Validiert Absender-Domänen per Whitelist/Blacklist, DNS, SPF, DKIM, DMARC, Domain-Alter (RDAP) und DNSBL, um moderne Spam-Muster zuverlässig zu erkennen.",
+  "version": "1.5",
+  "description": "Validiert Absender-Domänen per Whitelist/Blacklist, DNS, SPF, DKIM, DMARC, Domain-Alter (RDAP), DNSBL und Spam-Baukasten-/Fake-Website-Erkennung.",
   "browser_specific_settings": {
     "gecko": {
       "id": "email-validation@suke.local",
@@ -20,7 +20,8 @@
   "host_permissions": [
     "https://cloudflare-dns.com/*",
     "https://data.iana.org/*",
-    "https://*/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "scripts": [
