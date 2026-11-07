@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Suke Email Validation</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="popup-body">
+  <header class="app-header">
+    <div>
+      <h1>Suke Email Validation</h1>
+      <p id="modeIndicator">Lade Status…</p>
+    </div>
+    <button id="openOptionsBtn" title="Konfiguration & ausführliche Live-Diagnose öffnen">⚙️ Einstellungen & Diagnose</button>
+  </header>
+
+  <div class="btn-row">
+    <button id="scanFolderBtn" class="btn-primary">📂 Aktuellen Ordner prüfen</button>
+    <button id="scanSelectedBtn">✉️ Auswahl prüfen</button>
+    <label style="margin-left:auto; display:inline-flex; align-items:center; gap:5px; font-size:12px; cursor:pointer;" title="Wenn aktiv, werden Spam-Mails nur bewertet und geloggt, aber nicht verschoben">
+      <input type="checkbox" id="quickDryRunToggle">
+      Dry-Run
+    </label>
+  </div>
+
+  <div id="scanBanner" class="scan-banner hidden">
+    <span id="scanText" style="font-size:12px; font-weight:500;">Prüfe…</span>
+    <div class="progress-bar-wrap">
+      <div id="scanProgressFill" class="progress-bar-fill"></div>
+    </div>
+  </div>
+
+  <div id="statusMsg" class="muted" style="font-size:11.5px; display:none;"></div>
+
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+    <strong style="font-size:12px;">Letzte Bewertungen (Live)</strong>
+    <span id="logSummary" class="muted" style="font-size:11px;"></span>
+  </div>
+
+  <div id="popupLogList" class="popup-log-list">
+    <div class="muted" style="padding:16px; text-align:center;">Noch keine E-Mails geprüft.</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Suke Email Validation – Konfiguration & Live-Diagnose</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="options-container">
+    <header class="app-header">
+      <div>
+        <h1>🛡️ Suke.EmailValidationAddon – Konfiguration & Live-Diagnose</h1>
+        <p>Konfiguriere Prüfregeln & Score-Gewichtungen, starte manuelle Ordnerprüfungen und überwache die letzten Bewertungen in Echtzeit.</p>
+      </div>
+      <div class="btn-row">
+        <span id="saveStatus" class="status-toast"></span>
+        <button id="clearCacheBtn" title="Leert den 10-Minuten-In-Memory-Cache für DNS-Abfragen">🔄 DNS-Cache leeren (<span id="cacheCount">0</span>)</button>
+      </div>
+    </header>
+
+    <div id="scanBanner" class="scan-banner hidden">
+      <strong id="scanText">Ordnerprüfung läuft…</strong>
+      <div class="progress-bar-wrap">
+        <div id="scanProgressFill" class="progress-bar-fill"></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <!-- Karte 1: Allgemeine Einstellungen & Prüfungs-Scores -->
+      <section class="card">
+        <h2>
+          <span>⚙️ Filter-Konfiguration & Scores</span>
+          <span id="currentModeBadge" class="badge badge-ok">Aktiv</span>
+        </h2>
+
+        <div class="form-row">
+          <div>
+            <label for="spamThreshold">Spam-Schwellenwert (Score &lt; Wert = Spam)</label>
+            <span class="hint">Fällt der Gesamt-Score einer Domain unter diesen Wert (z. B. -51 bei -50), gilt die Mail als Spam.</span>
+          </div>
+          <input type="number" id="spamThreshold" step="5" max="0" min="-500" value="-50">
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label for="dryRun">Evaluierungs- / Dry-Run-Modus</label>
+            <span class="hint">Wenn aktiv, werden E-Mails nur bewertet und in der Live-Diagnose angezeigt, aber <strong>nicht</strong> verschoben oder als Junk markiert.</span>
+          </div>
+          <input type="checkbox" id="dryRun">
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label for="monitorAllFolders">Alle E-Mail-Ordner überwachen</label>
+            <span class="hint">Überwacht alle Ordner außer Systemordner (Junk, Papierkorb, Gesendet, Entwürfe, Archiv). Wenn aus: nur Posteingang.</span>
+          </div>
+          <input type="checkbox" id="monitorAllFolders">
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label for="maxLogEntries">Anzahl Einträge in der Live-Diagnose (Letzte X E-Mails)</label>
+            <span class="hint">Wie viele geprüfte E-Mails im Diagnose-Protokoll gespeichert werden sollen.</span>
+          </div>
+          <input type="number" id="maxLogEntries" step="10" min="10" max="1000" value="100">
+        </div>
+
+        <h3 style="font-size:13px; margin:14px 0 6px;">Einzelne DNS-/Authentifizierungs-Prüfungen</h3>
+        <table class="settings-table">
+          <thead>
+            <tr>
+              <th>Aktiv</th>
+              <th>Prüfung</th>
+              <th>Score bei Fehler</th>
+              <th>Option</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><input type="checkbox" id="chk_domainExists_enabled"></td>
+              <td>
+                <strong>1. Domain-Existenz (A / AAAA / MX)</strong>
+                <div class="muted" style="font-size:11px;">Prüft, ob die Domain im DNS überhaupt existiert (kein NXDOMAIN).</div>
+              </td>
+              <td><input type="number" id="chk_domainExists_score" step="5" max="0" min="-500"></td>
+              <td>
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" title="Keine weiteren DNS-Abfragen durchführen, wenn die Domain nicht existiert">
+                  <input type="checkbox" id="chk_domainExists_stop"> Sofort abbrechen
+                </label>
+              </td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_dnssec_enabled"></td>
+              <td>
+                <strong>2. DNSSEC-Signatur (AD-Flag)</strong>
+                <div class="muted" style="font-size:11px;">Prüft, ob die DNS-Antwort kryptografisch per DNSSEC signiert ist.</div>
+              </td>
+              <td><input type="number" id="chk_dnssec_score" step="5" max="0" min="-500"></td>
+              <td class="muted" style="font-size:11px;">–</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_mx_enabled"></td>
+              <td>
+                <strong>3. MX-Record vorhanden</strong>
+                <div class="muted" style="font-size:11px;">Prüft, ob die Absender-Domain selbst E-Mails empfangen kann.</div>
+              </td>
+              <td><input type="number" id="chk_mx_score" step="5" max="0" min="-500"></td>
+              <td class="muted" style="font-size:11px;">–</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_spf_enabled"></td>
+              <td>
+                <strong>4. SPF-Record vorhanden (v=spf1)</strong>
+                <div class="muted" style="font-size:11px;">Prüft, ob ein gültiger SPF-TXT-Eintrag für die Domain veröffentlicht ist.</div>
+              </td>
+              <td><input type="number" id="chk_spf_score" step="5" max="0" min="-500"></td>
+              <td class="muted" style="font-size:11px;">–</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_dkim_enabled"></td>
+              <td>
+                <strong>5. DKIM-Signatur &amp; DNS-Key</strong>
+                <div class="muted" style="font-size:11px;">Prüft den DKIM-Signature-Header (s=/d=) und den öffentlichen Schlüssel im DNS.</div>
+              </td>
+              <td><input type="number" id="chk_dkim_score" step="5" max="0" min="-500"></td>
+              <td class="muted" style="font-size:11px;">–</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="btn-row" style="margin-top:14px;">
+          <button id="saveSettingsBtn" class="btn-primary">💾 Einstellungen speichern</button>
+          <button id="resetSettingsBtn">↺ Standardwerte wiederherstellen</button>
+        </div>
+      </section>
+
+      <!-- Karte 2: Ordner-Prüfung & Live-Domain-Tester -->
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <section class="card">
+          <h2>📂 Manuelle Ordner- &amp; Nachrichtenprüfung</h2>
+          <p class="muted" style="margin-top:0;">
+            Du kannst jeden Ordner auch direkt in Thunderbird per <strong>Rechtsklick auf den Ordner</strong> oder <strong>Rechtsklick auf ausgewählte E-Mails</strong> prüfen lassen.
+          </p>
+
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div class="btn-row">
+              <select id="folderSelect" style="flex:1; min-width:200px;">
+                <option value="">Ordner werden geladen…</option>
+              </select>
+              <button id="scanSelectedFolderBtn" class="btn-primary">▶️ Ausgewählten Ordner prüfen</button>
+            </div>
+
+            <div class="btn-row">
+              <button id="scanActiveFolderBtn">📂 Aktuell geöffneten Ordner prüfen</button>
+              <button id="scanSelectedMsgsBtn">✉️ Markierte E-Mails prüfen</button>
+            </div>
+
+            <div id="folderScanResult" class="muted" style="font-size:12px;"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>🔬 Einzelne Domain / Absenderadresse live testen</h2>
+          <p class="muted" style="margin-top:0;">
+            Teste sofort, welchen Score eine Domain oder Absenderadresse mit den aktuell gespeicherten Regeln erhält.
+          </p>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div class="btn-row">
+              <input type="text" id="testDomainInput" placeholder="z.B. absender@beispiel.de oder google.com" style="flex:1;">
+              <button id="runDomainTestBtn" class="btn-primary">🔍 Domain prüfen</button>
+            </div>
+            <input type="text" id="testDkimInput" placeholder="Optional: DKIM-Signature Header (z.B. v=1; a=rsa-sha256; d=beispiel.de; s=default; ...)">
+            <div id="domainTestOutput" style="margin-top:4px;"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Karte 3: Live-Diagnose der letzten X E-Mails -->
+    <section class="card">
+      <h2>
+        <span>📊 Live-Diagnose – Letzte bewertete E-Mails</span>
+        <div class="btn-row" style="font-size:12px; font-weight:normal;">
+          <span id="diagStats" class="muted">0 Einträge</span>
+          <select id="logFilterStatus">
+            <option value="all">Alle Status anzeigen</option>
+            <option value="spam">Nur erkannte Spam-Mails</option>
+            <option value="ok">Nur unauffällige Mails (OK)</option>
+          </select>
+          <input type="text" id="logSearchInput" placeholder="Suche nach Domain, Absender, Betreff…" style="width:240px;">
+          <button id="clearLogBtn" class="btn-danger">🗑️ Protokoll leeren</button>
+        </div>
+      </h2>
+
+      <div class="log-table-wrapper">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>Zeit</th>
+              <th>Quelle / Ordner</th>
+              <th>Domain &amp; Absender</th>
+              <th>Betreff</th>
+              <th>Einzel-Prüfungen (Hover für Details)</th>
+              <th>Score</th>
+              <th>Ergebnis / Aktion</th>
+            </tr>
+          </thead>
+          <tbody id="diagTableBody">
+            <tr>
+              <td colspan="7" class="muted" style="text-align:center; padding:24px;">Noch keine E-Mails geprüft.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
+
