@@ -7,9 +7,11 @@ messenger.messages.onNewMailReceived.addListener(handleMessages, true); // monit
 const g_DOH_SERVICE_URL = 'https://cloudflare-dns.com/dns-query';
 
 /**
- * Defines the RDAP bootstrap/query URL for checking domain registration age
+ * Defines the IANA RDAP bootstrap URL to resolve authoritative RDAP servers per TLD directly
  */
-const g_RDAP_SERVICE_URL = 'https://rdap.org/domain/';
+const g_IANA_RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
+let g_RDAP_TLD_MAP = null;
+let g_RDAP_BOOTSTRAP_PROMISE = null;
 
 /**
  * Simple in-memory caches for DoH DNS and RDAP responses to avoid redundant network requests
@@ -904,14 +906,61 @@ async function getDMARCRecord(domain) {
 }
 
 /**
- * Queries RDAP (https://rdap.org/domain/<rootDomain>) to determine the registration age in days.
+ * Loads the official IANA RDAP bootstrap table once and maps each TLD to its HTTPS RDAP base URL.
+ * This avoids cross-origin 302 redirects (via rdap.org) and prevents unnecessary requests for TLDs without RDAP (like .de).
+ * @returns {Promise<Map<string, string>>}
+ */
+async function getRdapTldMap() {
+    if (g_RDAP_TLD_MAP) {
+        return g_RDAP_TLD_MAP;
+    }
+    if (g_RDAP_BOOTSTRAP_PROMISE) {
+        return g_RDAP_BOOTSTRAP_PROMISE;
+    }
+
+    g_RDAP_BOOTSTRAP_PROMISE = (async () => {
+        try {
+            const response = await fetch(g_IANA_RDAP_BOOTSTRAP_URL);
+            if (!response.ok) {
+                return new Map();
+            }
+            const data = await response.json();
+            const map = new Map();
+            if (data && Array.isArray(data.services)) {
+                for (const entry of data.services) {
+                    const tlds = entry[0];
+                    const urls = entry[1];
+                    if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
+                    const httpsUrl = urls.find(u => typeof u === 'string' && u.startsWith('https://')) || urls[0];
+                    if (!httpsUrl) continue;
+                    const normalizedBase = httpsUrl.endsWith('/') ? httpsUrl : `${httpsUrl}/`;
+                    for (const tld of tlds) {
+                        map.set(String(tld).toLowerCase(), normalizedBase);
+                    }
+                }
+            }
+            g_RDAP_TLD_MAP = map;
+            return map;
+        } catch (err) {
+            console.warn('Could not load IANA RDAP bootstrap table:', err);
+            return new Map();
+        } finally {
+            g_RDAP_BOOTSTRAP_PROMISE = null;
+        }
+    })();
+
+    return g_RDAP_BOOTSTRAP_PROMISE;
+}
+
+/**
+ * Queries the authoritative RDAP server for the domain's TLD to determine registration age in days.
  * Results are cached in memory for 60 minutes.
  * @param {string} domain
  * @returns {Promise<{ available: boolean, ageDays?: number, regDate?: string, reason?: string }>}
  */
 async function getDomainAgeRDAP(domain) {
     const rootDomain = getRegistrableDomain(domain);
-    if (!rootDomain) {
+    if (!rootDomain || !rootDomain.includes('.')) {
         return { available: false, reason: 'Ungültige Domain' };
     }
 
@@ -921,15 +970,22 @@ async function getDomainAgeRDAP(domain) {
         return cached.result;
     }
 
+    const tld = rootDomain.split('.').pop().toLowerCase();
+    const tldMap = await getRdapTldMap();
+    const rdapBaseUrl = tldMap.get(tld);
+
+    if (!rdapBaseUrl) {
+        const result = { available: false, reason: `Kein RDAP für .${tld}` };
+        g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
+        return result;
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
 
     try {
-        const url = `${g_RDAP_SERVICE_URL}${encodeURIComponent(rootDomain)}`;
+        const url = `${rdapBaseUrl}domain/${encodeURIComponent(rootDomain)}`;
         const response = await fetch(url, {
-            headers: {
-                'accept': 'application/rdap+json, application/json'
-            },
             signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -964,7 +1020,9 @@ async function getDomainAgeRDAP(domain) {
         return result;
     } catch (err) {
         clearTimeout(timeoutId);
-        return { available: false, reason: err.name === 'AbortError' ? 'Timeout' : 'Netzwerkfehler' };
+        const result = { available: false, reason: err.name === 'AbortError' ? 'Timeout' : 'RDAP-Server nicht erreichbar' };
+        g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
+        return result;
     }
 }
 
