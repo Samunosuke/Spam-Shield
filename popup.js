@@ -12,6 +12,18 @@ const logSummary = document.getElementById('logSummary');
 
 let currentSettings = null;
 
+async function sendToBackground(payload) {
+    if (!messenger.runtime || typeof messenger.runtime.sendMessage !== 'function') {
+        return null;
+    }
+    try {
+        return await messenger.runtime.sendMessage(payload);
+    } catch (err) {
+        console.warn(`sendMessage(${payload && payload.action}) error:`, err);
+        return null;
+    }
+}
+
 function showStatus(text, isError = false) {
     statusMsg.style.display = 'block';
     statusMsg.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
@@ -41,7 +53,11 @@ function renderCheckPills(checks) {
         ['dnssec', 'DNSSEC'],
         ['mx', 'MX'],
         ['spf', 'SPF'],
-        ['dkim', 'DKIM']
+        ['dkim', 'DKIM'],
+        ['dmarc', 'DMARC'],
+        ['domainAge', 'Alter'],
+        ['dnsbl', 'DNSBL'],
+        ['spfIpMatch', 'SPF-IP']
     ];
     return labels.map(([key, label]) => {
         const c = checks[key];
@@ -107,15 +123,18 @@ function renderPopupLog(log) {
 
 async function refreshState() {
     try {
-        const state = await messenger.runtime.sendMessage({ action: 'GET_STATE' });
-        if (!state) return;
-        currentSettings = state.settings;
+        let localData = {};
+        if (messenger.storage && messenger.storage.local) {
+            localData = await messenger.storage.local.get(['settings', 'diagnosticLog']);
+        }
+        const state = await sendToBackground({ action: 'GET_STATE' });
+        currentSettings = (state && state.settings) || localData.settings || { spamThreshold: -50, dryRun: false };
         quickDryRunToggle.checked = Boolean(currentSettings.dryRun);
         modeIndicator.textContent = currentSettings.dryRun
             ? `Schwellenwert: < ${currentSettings.spamThreshold} · Evaluierungsmodus (Dry-Run)`
             : `Schwellenwert: < ${currentSettings.spamThreshold} · Aktiv (Verschieben nach Junk)`;
-        updateScanBanner(state.scanState);
-        renderPopupLog(state.diagnosticLog);
+        updateScanBanner(state ? state.scanState : null);
+        renderPopupLog((state && state.diagnosticLog) || localData.diagnosticLog || []);
     } catch (err) {
         showStatus(`Fehler beim Laden: ${err.message || err}`, true);
     }
@@ -129,7 +148,10 @@ openOptionsBtn.addEventListener('click', () => {
 quickDryRunToggle.addEventListener('change', async () => {
     if (!currentSettings) return;
     currentSettings.dryRun = quickDryRunToggle.checked;
-    await messenger.runtime.sendMessage({
+    if (messenger.storage && messenger.storage.local) {
+        await messenger.storage.local.set({ settings: currentSettings });
+    }
+    await sendToBackground({
         action: 'SAVE_SETTINGS',
         settings: currentSettings
     });
@@ -138,37 +160,38 @@ quickDryRunToggle.addEventListener('change', async () => {
 
 scanFolderBtn.addEventListener('click', async () => {
     showStatus('Prüfe aktuellen Ordner…');
-    try {
-        const res = await messenger.runtime.sendMessage({ action: 'SCAN_ACTIVE_FOLDER' });
-        showStatus(`Ordner geprüft: ${res.processed} E-Mails (${res.spamCount} Spam).`);
-        await refreshState();
-    } catch (err) {
-        showStatus(`Ordnerprüfung fehlgeschlagen: ${err.message || err}`, true);
+    const res = await sendToBackground({ action: 'SCAN_ACTIVE_FOLDER' });
+    if (!res || res.error) {
+        showStatus(`Ordnerprüfung fehlgeschlagen: ${(res && res.error) || 'Verbindungsfehler'}`, true);
+        return;
     }
+    showStatus(`Ordner geprüft: ${res.processed} E-Mails (${res.spamCount} Spam).`);
+    await refreshState();
 });
 
 scanSelectedBtn.addEventListener('click', async () => {
     showStatus('Prüfe ausgewählte E-Mails…');
-    try {
-        const res = await messenger.runtime.sendMessage({ action: 'SCAN_SELECTED_MESSAGES' });
-        showStatus(`Auswahl geprüft: ${res.processed} E-Mails (${res.spamCount} Spam).`);
-        await refreshState();
-    } catch (err) {
-        showStatus(`Auswahlprüfung fehlgeschlagen: ${err.message || err}`, true);
+    const res = await sendToBackground({ action: 'SCAN_SELECTED_MESSAGES' });
+    if (!res || res.error) {
+        showStatus(`Auswahlprüfung fehlgeschlagen: ${(res && res.error) || 'Verbindungsfehler'}`, true);
+        return;
     }
+    showStatus(`Auswahl geprüft: ${res.processed} E-Mails (${res.spamCount} Spam).`);
+    await refreshState();
 });
 
-messenger.runtime.onMessage.addListener((msg) => {
-    if (!msg) return;
-    if (msg.type === 'SCAN_PROGRESS' || msg.type === 'SCAN_COMPLETE') {
-        updateScanBanner(msg.scanState);
-        if (msg.type === 'SCAN_COMPLETE') {
+if (messenger.runtime && messenger.runtime.onMessage) {
+    messenger.runtime.onMessage.addListener((msg) => {
+        if (!msg) return;
+        if (msg.type === 'SCAN_PROGRESS' || msg.type === 'SCAN_COMPLETE') {
+            updateScanBanner(msg.scanState);
+            if (msg.type === 'SCAN_COMPLETE') {
+                refreshState();
+            }
+        } else if (msg.type === 'LOG_UPDATED') {
             refreshState();
         }
-    } else if (msg.type === 'LOG_UPDATED') {
-        refreshState();
-    }
-});
+    });
+}
 
 refreshState();
-

@@ -7,11 +7,18 @@ messenger.messages.onNewMailReceived.addListener(handleMessages, true); // monit
 const g_DOH_SERVICE_URL = 'https://cloudflare-dns.com/dns-query';
 
 /**
- * Simple in-memory cache for DoH DNS responses to avoid redundant network requests
- * Key: `${domain}:${type}`, Value: { timestamp: number, data: object | null }
+ * Defines the RDAP bootstrap/query URL for checking domain registration age
+ */
+const g_RDAP_SERVICE_URL = 'https://rdap.org/domain/';
+
+/**
+ * Simple in-memory caches for DoH DNS and RDAP responses to avoid redundant network requests
  */
 const g_DNS_CACHE = new Map();
 const g_DNS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+const g_RDAP_CACHE = new Map();
+const g_RDAP_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 
 /**
  * Folder types that should be ignored when monitoring all folders automatically
@@ -47,6 +54,24 @@ const DEFAULT_SETTINGS = {
         dkim: {
             enabled: true,
             score: -20
+        },
+        dmarc: {
+            enabled: true,
+            score: -20,
+            penalizeNone: true
+        },
+        domainAge: {
+            enabled: true,
+            score: -40,
+            minAgeDays: 90
+        },
+        dnsbl: {
+            enabled: true,
+            score: -80
+        },
+        spfIpMatch: {
+            enabled: true,
+            score: -40
         }
     }
 };
@@ -67,10 +92,11 @@ let g_SCAN_STATE = {
 initExtension();
 
 async function initExtension() {
-    // Ensure default settings exist in storage
     try {
         const stored = await getSettings();
-        await messenger.storage.local.set({ settings: stored });
+        if (messenger.storage && messenger.storage.local) {
+            await messenger.storage.local.set({ settings: stored });
+        }
     } catch (err) {
         console.warn('Could not initialize settings in storage:', err);
     }
@@ -104,7 +130,17 @@ function setupContextMenus() {
 if (messenger.menus && messenger.menus.onClicked) {
     messenger.menus.onClicked.addListener(async (info, tab) => {
         if (info.menuItemId === 'suke-validate-folder') {
-            const folders = info.selectedFolders || (info.selectedFolder ? [info.selectedFolder] : []);
+            let folders = [];
+            if (Array.isArray(info.selectedFolders) && info.selectedFolders.length > 0) {
+                folders = info.selectedFolders;
+            } else if (info.selectedFolder) {
+                folders = [info.selectedFolder];
+            } else if (messenger.mailTabs && tab) {
+                const mailTab = await messenger.mailTabs.get(tab.id).catch(() => null);
+                if (mailTab && mailTab.displayedFolder) {
+                    folders = [mailTab.displayedFolder];
+                }
+            }
             for (const folder of folders) {
                 await scanFolder(folder, 'context-folder');
             }
@@ -113,11 +149,22 @@ if (messenger.menus && messenger.menus.onClicked) {
             if (!msgList && messenger.mailTabs && tab) {
                 msgList = await messenger.mailTabs.getSelectedMessages(tab.id);
             }
+            let fallbackFolder = info.displayedFolder || null;
+            if (!fallbackFolder && messenger.mailTabs && tab) {
+                const mailTab = await messenger.mailTabs.get(tab.id).catch(() => null);
+                if (mailTab && mailTab.displayedFolder) {
+                    fallbackFolder = mailTab.displayedFolder;
+                }
+            }
             if (msgList) {
-                await scanMessageList(msgList, null, 'context-messages');
+                await scanMessageList(msgList, fallbackFolder, 'context-messages');
             }
         }
     });
+}
+
+function cloneDefaults() {
+    return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 }
 
 /**
@@ -126,7 +173,7 @@ if (messenger.menus && messenger.menus.onClicked) {
  */
 async function getSettings() {
     if (!messenger.storage || !messenger.storage.local) {
-        return structuredClone(DEFAULT_SETTINGS);
+        return cloneDefaults();
     }
     try {
         const data = await messenger.storage.local.get('settings');
@@ -135,10 +182,10 @@ async function getSettings() {
         for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS.checks)) {
             mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
         }
-        return Object.assign({}, DEFAULT_SETTINGS, saved, { checks: mergedChecks });
+        return Object.assign({}, cloneDefaults(), saved, { checks: mergedChecks });
     } catch (err) {
         console.warn('Failed to load settings from storage, using defaults:', err);
-        return structuredClone(DEFAULT_SETTINGS);
+        return cloneDefaults();
     }
 }
 
@@ -204,1152 +251,1217 @@ async function* iterateMessagePages(messageList) {
  * @param {*} msgList the list of message headers (see https://webextension-api.thunderbird.net/en/mv3/messages.html#messagelist)
  */
 async function handleMessages(folder, msgList) {
-    // Ignore messages arriving directly in Junk, Trash, Sent, Drafts, etc.
+    const settings = await getSettings();
+
     if (folder && Array.isArray(folder.specialUse)) {
+        // Always ignore Junk, Trash, Sent, Drafts, etc. on automatic incoming events
         if (folder.specialUse.some(use => g_IGNORED_FOLDER_TYPES.has(use))) {
             console.log(`Skipping folder ${folder.name} (specialUse: ${folder.specialUse.join(', ')})`);
             return;
-            async function handleMessages(folder, msgList) {
-                const settings = await getSettings();
+        }
+        // If monitorAllFolders is disabled in settings, only process inbox folders
+        if (!settings.monitorAllFolders && !folder.specialUse.includes('inbox')) {
+            console.log(`Skipping non-inbox folder ${folder.name} because monitorAllFolders is false`);
+            return;
+        }
+    }
 
-                if (folder && Array.isArray(folder.specialUse)) {
-                    // Always ignore Junk, Trash, Sent, Drafts, etc. on automatic incoming events
-                    if (folder.specialUse.some(use => g_IGNORED_FOLDER_TYPES.has(use))) {
-                        console.log(`Skipping folder ${folder.name} (specialUse: ${folder.specialUse.join(', ')})`);
-                        return;
-                    }
-                    // If monitorAllFolders is disabled in settings, only process inbox folders
-                    if (!settings.monitorAllFolders && !folder.specialUse.includes('inbox')) {
-                        console.log(`Skipping non-inbox folder ${folder.name} because monitorAllFolders is false`);
-                        return;
-                    }
-                }
+    console.log(`Handling incoming messages in folder: ${folder ? folder.name : 'unknown'}`);
 
-                console.log(`Handling incoming messages in folder: ${folder ? folder.name : 'unknown'}`);
+    try {
+        for await (const message of iterateMessagePages(msgList)) {
+            await evaluateAndProcessMessage(message, folder, settings, 'auto');
+        }
+    } catch (ex) {
+        console.error('ERROR failed to iterate over messages:', ex);
+    }
+}
 
-                try {
-                    for await (const message of iterateMessagePages(msgList)) {
-                        await evaluateAndProcessMessage(message, folder, settings, 'auto');
-                    }
-                } catch (ex) {
-                    console.error('ERROR failed to iterate over messages:', ex);
-                }
+/**
+ * Resolves a human-readable folder name from folder object or message.folder
+ */
+function resolveFolderName(folder, message) {
+    if (folder && typeof folder === 'object' && folder.name) {
+        return folder.name;
+    }
+    if (message && message.folder && message.folder.name) {
+        return message.folder.name;
+    }
+    if (folder && typeof folder === 'object' && folder.path) {
+        return folder.path;
+    }
+    return 'Postfach';
+}
+
+/**
+ * Evaluates a single message, records the result in the live diagnostic log,
+ * and moves/marks it as spam if below threshold (unless dryRun is enabled).
+ * @param {object} message Thunderbird MessageHeader
+ * @param {object|null} folder Thunderbird MailFolder
+ * @param {object} settings Current addon settings
+ * @param {string} source 'auto' | 'folder-scan' | 'context-folder' | 'context-messages' | 'selected-messages'
+ * @returns {Promise<{ isSpam: boolean, score: number }>}
+ */
+async function evaluateAndProcessMessage(message, folder, settings, source = 'auto') {
+    const targetFolder = (folder && typeof folder === 'object') ? folder : (message.folder || null);
+    const folderName = resolveFolderName(targetFolder, message);
+    console.log(`Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...)`);
+
+    try {
+        const senderAddress = message.author || '';
+        const domain = await extractDomainFromAuthor(senderAddress);
+        if (!domain) {
+            console.warn(`Could not extract domain from sender address: ${senderAddress}`);
+            await appendDiagnosticLog({
+                id: `${Date.now()}-${message.id}`,
+                timestamp: Date.now(),
+                messageId: message.id,
+                author: senderAddress,
+                domain: '(unbekannt)',
+                subject: message.subject || '(Kein Betreff)',
+                folderName,
+                source,
+                score: 0,
+                threshold: settings.spamThreshold,
+                isSpam: false,
+                actionTaken: 'error',
+                actionLabel: 'Keine Domain erkannt',
+                checks: {}
+            }, settings.maxLogEntries);
+            return { isSpam: false, score: 0 };
+        }
+
+        // Use getHeaders() instead of getFull() to avoid parsing the full MIME body
+        const headers = messenger.messages.getHeaders
+            ? await messenger.messages.getHeaders(message.id)
+            : (await messenger.messages.getFull(message.id)).headers;
+        const dkimSig = headers ? headers['dkim-signature'] : null;
+
+        // Perform detailed domain validation (passing full headers for SPF-IP / Received inspection)
+        const result = await validateDomainDetailed(domain, dkimSig, settings, headers);
+        const { score, isSpam, checks } = result;
+        console.log(`Validation score for ${domain} (messageID: ${message.id}): ${score} (threshold: ${settings.spamThreshold})`);
+
+        let actionTaken = 'passed';
+        let actionLabel = 'OK';
+
+        if (isSpam) {
+            if (settings.dryRun) {
+                console.log(`[DRY-RUN SPAM] Would mark message from ${message.author} (score: ${score}) as Junk.`);
+                actionTaken = 'dry-run';
+                actionLabel = 'Spam (Dry-Run – nicht verschoben)';
+            } else {
+                console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
+                await markAndMoveToSpam(message, targetFolder);
+                actionTaken = 'moved';
+                actionLabel = 'Als Spam markiert & verschoben';
             }
+        }
 
-            /**
-             * Evaluates a single message, records the result in the live diagnostic log,
-             * and moves/marks it as spam if below threshold (unless dryRun is enabled).
-             * @param {object} message Thunderbird MessageHeader
-             * @param {object|null} folder Thunderbird MailFolder
-             * @param {object} settings Current addon settings
-             * @param {string} source 'auto' | 'folder-scan' | 'context-folder' | 'context-messages' | 'selected-messages'
-             * @returns {Promise<{ isSpam: boolean, score: number }>}
-             */
-            async function evaluateAndProcessMessage(message, folder, settings, source = 'auto') {
-                const targetFolder = folder || message.folder || null;
-                const folderName = targetFolder ? targetFolder.name : 'Unbekannt';
-                console.log(`Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...)`);
+        await appendDiagnosticLog({
+            id: `${Date.now()}-${message.id}-${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: Date.now(),
+            messageId: message.id,
+            author: senderAddress,
+            domain,
+            subject: message.subject || '(Kein Betreff)',
+            folderName,
+            source,
+            score,
+            threshold: settings.spamThreshold,
+            isSpam,
+            actionTaken,
+            actionLabel,
+            checks
+        }, settings.maxLogEntries);
 
-                try {
-                    const senderAddress = message.author || '';
-                    const domain = await extractDomainFromAuthor(senderAddress);
-                    if (!domain) {
-                        console.warn(`Could not extract domain from sender address: ${senderAddress}`);
-                        await appendDiagnosticLog({
-                            id: `${Date.now()}-${message.id}`,
-                            timestamp: Date.now(),
-                            messageId: message.id,
-                            author: senderAddress,
-                            domain: '(unbekannt)',
-                            subject: message.subject || '(Kein Betreff)',
-                            folderName,
-                            source,
-                            score: 0,
-                            threshold: settings.spamThreshold,
-                            isSpam: false,
-                            actionTaken: 'error',
-                            actionLabel: 'Keine Domain erkannt',
-                            checks: {}
-                        }, settings.maxLogEntries);
-                        return { isSpam: false, score: 0 };
-                    }
+        return { isSpam, score };
+    } catch (error) {
+        console.error(`ERROR Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...):`, error);
+        await appendDiagnosticLog({
+            id: `${Date.now()}-${message.id}`,
+            timestamp: Date.now(),
+            messageId: message.id,
+            author: message.author || '',
+            domain: '-',
+            subject: message.subject || '(Kein Betreff)',
+            folderName,
+            source,
+            score: 0,
+            threshold: settings.spamThreshold,
+            isSpam: false,
+            actionTaken: 'error',
+            actionLabel: `Fehler: ${error.message || error}`,
+            checks: {}
+        }, settings.maxLogEntries);
+        return { isSpam: false, score: 0 };
+    }
+}
 
-                    // Use getHeaders() instead of getFull() to avoid parsing the full MIME body
-                    const headers = messenger.messages.getHeaders
-                        ? await messenger.messages.getHeaders(message.id)
-                        : (await messenger.messages.getFull(message.id)).headers;
-                    const dkimSig = headers ? headers['dkim-signature'] : null;
+/**
+ * Scans all messages in a given folder (triggered via context menu, popup, or options page)
+ * @param {object|string} folder MailFolder object or folderId string
+ * @param {string} source label for diagnostic log
+ */
+async function scanFolder(folder, source = 'folder-scan') {
+    if (!folder) {
+        return { processed: 0, spamCount: 0 };
+    }
 
-                    // Perform detailed domain validation
-                    const result = await validateDomainDetailed(domain, dkimSig, settings);
-                    const { score, isSpam, checks } = result;
-                    console.log(`Validation score for ${domain} (messageID: ${message.id}): ${score} (threshold: ${settings.spamThreshold})`);
+    let folderObj = folder;
+    if (typeof folder === 'string' && messenger.folders && messenger.folders.get) {
+        try {
+            folderObj = await messenger.folders.get(folder);
+        } catch {
+            folderObj = { id: folder, name: folder };
+        }
+    } else if (typeof folder === 'object' && !folder.name && folder.id && messenger.folders && messenger.folders.get) {
+        try {
+            folderObj = await messenger.folders.get(folder.id);
+        } catch {
+            folderObj = folder;
+        }
+    }
 
-                    let actionTaken = 'passed';
-                    let actionLabel = 'OK';
+    const folderId = typeof folderObj === 'object' ? (folderObj.id || folderObj) : folderObj;
+    const msgList = await messenger.messages.list(folderId);
+    return await scanMessageList(msgList, folderObj, source);
+}
 
-                    if (isSpam) {
-                        if (settings.dryRun) {
-                            console.log(`[DRY-RUN SPAM] Would mark message from ${message.author} (score: ${score}) as Junk.`);
-                            actionTaken = 'dry-run';
-                            actionLabel = 'Spam (Dry-Run – nicht verschoben)';
-                        } else {
-                            console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
-                            await markAndMoveToSpam(message, targetFolder);
-                            actionTaken = 'moved';
-                            actionLabel = 'Als Spam markiert & verschoben';
-                        }
-                    }
+/**
+ * Scans all messages in a MessageList and updates live progress state
+ * @param {object} msgList Thunderbird MessageList
+ * @param {object|null} folder optional MailFolder
+ * @param {string} source label for diagnostic log
+ */
+async function scanMessageList(msgList, folder = null, source = 'message-scan') {
+    const settings = await getSettings();
 
-                    console.log(`Handling incoming messages in folder: ${folder ? folder.name : 'unknown'}`);
-                    await appendDiagnosticLog({
-                        id: `${Date.now()}-${message.id}-${Math.random().toString(36).slice(2, 6)}`,
-                        timestamp: Date.now(),
-                        messageId: message.id,
-                        author: senderAddress,
-                        domain,
-                        subject: message.subject || '(Kein Betreff)',
-                        folderName,
-                        source,
-                        score,
-                        threshold: settings.spamThreshold,
-                        isSpam,
-                        actionTaken,
-                        actionLabel,
-                        checks
-                    }, settings.maxLogEntries);
+    // Collect all messages across pages first so we have an accurate total count
+    // and so moving messages to Junk during iteration does not invalidate the cursor
+    const allMessages = [];
+    for await (const msg of iterateMessagePages(msgList)) {
+        allMessages.push(msg);
+    }
 
-                    try {
-                        // Iterate over all pages of messages (headers)
-                        for await (const message of iterateMessagePages(msgList)) {
-                            // see message header https://webextension-api.thunderbird.net/en/mv3/messages.html#messageheader
-                            console.log(`Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...)`);
-                            return { isSpam, score };
-                        } catch (error) {
-                            console.error(`ERROR Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...):`, error);
-                            await appendDiagnosticLog({
-                                id: `${Date.now()}-${message.id}`,
-                                timestamp: Date.now(),
-                                messageId: message.id,
-                                author: message.author || '',
-                                domain: '-',
-                                subject: message.subject || '(Kein Betreff)',
-                                folderName,
-                                source,
-                                score: 0,
-                                threshold: settings.spamThreshold,
-                                isSpam: false,
-                                actionTaken: 'error',
-                                actionLabel: `Fehler: ${error.message || error}`,
-                                checks: {}
-                            }, settings.maxLogEntries);
-                            return { isSpam: false, score: 0 };
-                        }
-                    }
+    const firstMsgFolder = allMessages.length > 0 ? allMessages[0].folder : null;
+    const effectiveFolder = (folder && folder.name) ? folder : (firstMsgFolder || folder);
 
-                        try {
-                        const senderAddress = message.author;
-                        const domain = await extractDomainFromAuthor(senderAddress);
-                        if (!domain) {
-                            console.warn(`Could not extract domain from sender address: ${senderAddress}`);
-                            continue;
-                        }
-                        /**
-                         * Scans all messages in a given folder (triggered via context menu, popup, or options page)
-                         * @param {object} folder MailFolder object or folderId string
-                         * @param {string} source label for diagnostic log
-                         */
-                        async function scanFolder(folder, source = 'folder-scan') {
-                            if (!folder) {
-                                return { processed: 0, spamCount: 0 };
-                            }
+    g_SCAN_STATE = {
+        running: true,
+        sourceName: effectiveFolder && effectiveFolder.name ? effectiveFolder.name : 'Auswahl',
+        processed: 0,
+        total: allMessages.length,
+        spamCount: 0,
+        startedAt: Date.now()
+    };
+    notifyUI({ type: 'SCAN_PROGRESS', scanState: g_SCAN_STATE });
 
-                            // Use getHeaders() instead of getFull() to avoid parsing the full MIME body
-                            const headers = messenger.messages.getHeaders
-                                ? await messenger.messages.getHeaders(message.id)
-                                : (await messenger.messages.getFull(message.id)).headers;
-                            const dkimSig = headers ? headers['dkim-signature'] : null;
-                            let folderObj = folder;
-                            if (typeof folder === 'string' && messenger.folders && messenger.folders.get) {
-                                try {
-                                    folderObj = await messenger.folders.get(folder);
-                                } catch {
-                                    folderObj = { id: folder, name: folder };
-                                }
-                            }
-
-                            // Führen Sie hier die Validierungsprüfungen durch
-                            const score = await validateDomain(domain, dkimSig);
-                            console.log(`Validation score for ${domain} (messageID: ${message.id}): ${score}`);
-                            const folderId = typeof folderObj === 'object' ? (folderObj.id || folderObj) : folderObj;
-                            const msgList = await messenger.messages.list(folderId);
-                            return await scanMessageList(msgList, folderObj, source);
-                        }
-
-                        if (score < -50) {
-                            console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
-                            await markAndMoveToSpam(message, folder);
-                        }
-                    } catch (error) {
-                        console.error(`ERROR Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...):`, error);
-                    }
-                }
-                } catch (ex) {
-                console.error('ERROR failed to iterate over messages:', ex);
+    try {
+        for (const message of allMessages) {
+            const res = await evaluateAndProcessMessage(message, effectiveFolder || message.folder, settings, source);
+            g_SCAN_STATE.processed += 1;
+            if (res && res.isSpam) {
+                g_SCAN_STATE.spamCount += 1;
             }
-            /**
-             * Scans all messages in a MessageList and updates live progress state
-             * @param {object} msgList Thunderbird MessageList
-             * @param {object|null} folder optional MailFolder
-             * @param {string} source label for diagnostic log
-             */
-            async function scanMessageList(msgList, folder = null, source = 'message-scan') {
-                const settings = await getSettings();
+            notifyUI({ type: 'SCAN_PROGRESS', scanState: g_SCAN_STATE });
+        }
+    } finally {
+        g_SCAN_STATE.running = false;
+        notifyUI({ type: 'SCAN_COMPLETE', scanState: g_SCAN_STATE });
+    }
 
-                // Collect all messages across pages first so we have an accurate total count
-                // and so moving messages to Junk during iteration does not invalidate the cursor
-                const allMessages = [];
-                for await (const msg of iterateMessagePages(msgList)) {
-                    allMessages.push(msg);
-                }
+    return {
+        processed: g_SCAN_STATE.processed,
+        spamCount: g_SCAN_STATE.spamCount,
+        total: g_SCAN_STATE.total
+    };
+}
 
-                g_SCAN_STATE = {
-                    running: true,
-                    sourceName: folder && folder.name ? folder.name : 'Auswahl',
-                    processed: 0,
-                    total: allMessages.length,
-                    spamCount: 0,
-                    startedAt: Date.now()
-                };
-                notifyUI({ type: 'SCAN_PROGRESS', scanState: g_SCAN_STATE });
+/**
+ * Marks a message as junk and moves it to the account's Junk/Spam folder if available
+ * @param {object} message the MessageHeader object
+ * @param {object} sourceFolder the MailFolder where the message is currently located
+ */
+async function markAndMoveToSpam(message, sourceFolder) {
+    // 1. Mark message as Junk via messages.update
+    try {
+        await messenger.messages.update(message.id, { junk: true });
+    } catch (err) {
+        console.warn(`Could not update junk flag on message ${message.id}:`, err);
+    }
 
-                try {
-                    for (const message of allMessages) {
-                        const res = await evaluateAndProcessMessage(message, folder || message.folder, settings, source);
-                        g_SCAN_STATE.processed += 1;
-                        if (res && res.isSpam) {
-                            g_SCAN_STATE.spamCount += 1;
-                        }
-                        notifyUI({ type: 'SCAN_PROGRESS', scanState: g_SCAN_STATE });
-                    }
-                } finally {
-                    g_SCAN_STATE.running = false;
-                    notifyUI({ type: 'SCAN_COMPLETE', scanState: g_SCAN_STATE });
-                }
+    // 2. Find the Junk folder for this account and move the message
+    try {
+        const accountId = (sourceFolder && sourceFolder.accountId) || (message.folder && message.folder.accountId);
+        if (!accountId) {
+            return;
+        }
+        const junkFolders = await messenger.folders.query({
+            accountId: accountId,
+            specialUse: ['junk']
+        });
 
-                /**
-                 * Marks a message as junk and moves it to the account's Junk/Spam folder if available
-                 * @param {object} message the MessageHeader object
-                 * @param {object} sourceFolder the MailFolder where the message is currently located
-                 */
-                async function markAndMoveToSpam(message, sourceFolder) {
-                    // 1. Mark message as Junk via messages.update
-                    try {
-                        await messenger.messages.update(message.id, { junk: true });
-                    } catch (err) {
-                        console.warn(`Could not update junk flag on message ${message.id}:`, err);
-                    }
+        if (junkFolders && junkFolders.length > 0) {
+            const targetFolderId = junkFolders[0].id;
+            if (!sourceFolder || sourceFolder.id !== targetFolderId) {
+                await messenger.messages.move([message.id], targetFolderId);
+            }
+        } else {
+            console.warn(`No Junk folder found for account ${accountId}. Message was marked as junk in place.`);
+        }
+    } catch (err) {
+        console.error(`Failed to move message ${message.id} to Junk folder:`, err);
+    }
+}
+
+/**
+ * Extracts the sender domain using Thunderbird's RFC 5322 parser (messengerUtilities.parseMailboxString)
+ * with a fallback to manual string parsing.
+ * @param {string} senderAddress 
+ * @returns {Promise<string|null>}
+ */
+async function extractDomainFromAuthor(senderAddress) {
+    if (!senderAddress || typeof senderAddress !== 'string') {
+        return null;
+    }
+
+    if (messenger.messengerUtilities && typeof messenger.messengerUtilities.parseMailboxString === 'function') {
+        try {
+            const parsed = await messenger.messengerUtilities.parseMailboxString(senderAddress);
+            if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].email) {
+                return getDomainFromAddress(parsed[0].email);
+            }
+        } catch (err) {
+            console.warn('parseMailboxString failed, falling back to manual parsing:', err);
+        }
+    }
+
+    return getDomainFromAddress(senderAddress);
+}
+
+/**
+ * Parses the given sender address (or plain domain) and returns just the domain
+ * @param {string} senderAddress 
+ */
+function getDomainFromAddress(senderAddress) {
+    if (!senderAddress || typeof senderAddress !== 'string') {
+        return null;
+    }
+
+    // Falls eine Adresse in spitzen Klammern steht (z.B. "Name <user@domain.tld>"), extrahiere den Teil darin
+    const angleMatch = senderAddress.match(/<([^<>]+)>/);
+    const addressPart = angleMatch ? angleMatch[1] : senderAddress;
+
+    const atIndex = addressPart.lastIndexOf('@');
+    if (atIndex === -1) {
+        return null;
+    }
+
+    let domain = addressPart.slice(atIndex + 1).trim();
+    // Entfernt eventuelle Restzeichen wie ">", Anführungszeichen oder Leerzeichen
+    domain = domain.replace(/[>"'\s]+$/g, '').toLowerCase();
+
+    return domain || null;
+}
+
+/**
+ * Extracts the registrable root domain (e.g. "mail.sub.example.com" -> "example.com")
+ * for RDAP and organizational DMARC lookups.
+ * @param {string} domain
+ * @returns {string}
+ */
+function getRegistrableDomain(domain) {
+    if (!domain) return '';
+    const parts = domain.toLowerCase().split('.').filter(Boolean);
+    if (parts.length <= 2) {
+        return parts.join('.');
+    }
+    const twoPartTlds = new Set([
+        'co.uk', 'org.uk', 'gov.uk', 'ac.uk',
+        'co.at', 'or.at', 'gv.at', 'ac.at',
+        'com.au', 'net.au', 'org.au',
+        'co.jp', 'ne.jp', 'or.jp',
+        'com.br', 'com.mx', 'co.nz', 'co.za', 'com.tr', 'com.pl', 'com.cn'
+    ]);
+    const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+    if (twoPartTlds.has(lastTwo) && parts.length >= 3) {
+        return parts.slice(-3).join('.');
+    }
+    return parts.slice(-2).join('.');
+}
+
+/**
+ * Validates a domain and returns both the total score and a detailed breakdown of each check.
+ * @param {string} domain the sender domain
+ * @param {string[]|null} dkimSig the dkim-signature header array
+ * @param {object} [customSettings] optional settings object (loaded from storage if omitted)
+ * @param {object|null} [headers] optional full message headers dictionary (for Received / SPF-IP verification)
+ * @returns {Promise<{ score: number, isSpam: boolean, checks: object }>}
+ */
+async function validateDomainDetailed(domain, dkimSig, customSettings = null, headers = null) {
+    const settings = customSettings || await getSettings();
+    const cfg = settings.checks || DEFAULT_SETTINGS.checks;
+    const checks = {};
+    let score = 0;
+
+    // Perform A and MX record lookups in parallel
+    const [aRecordData, mxRecordData] = await Promise.all([
+        getDNSEntry(domain, 'A', true),
+        getDNSEntry(domain, 'MX', true)
+    ]);
+
+    const isNxDomain = (aRecordData && aRecordData.Status === 3) || (mxRecordData && mxRecordData.Status === 3);
+    const hasARecord = Boolean(aRecordData && aRecordData.Status === 0 && Array.isArray(aRecordData.Answer) && aRecordData.Answer.length > 0);
+    const hasMXRecord = Boolean(mxRecordData && mxRecordData.Status === 0 && Array.isArray(mxRecordData.Answer) && mxRecordData.Answer.length > 0);
+
+    let hasAAAARecord = false;
+    if (!isNxDomain && !hasARecord && !hasMXRecord) {
+        const aaaaRecordData = await getDNSEntry(domain, 'AAAA', true);
+        hasAAAARecord = Boolean(aaaaRecordData && aaaaRecordData.Status === 0 && Array.isArray(aaaaRecordData.Answer) && aaaaRecordData.Answer.length > 0);
+    }
+
+    const domainExists = !isNxDomain && (hasARecord || hasMXRecord || hasAAAARecord);
+
+    // 1. Domain existence check
+    if (cfg.domainExists && cfg.domainExists.enabled) {
+        const delta = domainExists ? 0 : Number(cfg.domainExists.score ?? -100);
+        score += delta;
+        checks.domainExists = {
+            enabled: true,
+            passed: domainExists,
+            scoreDelta: delta,
+            info: domainExists
+                ? `DNS aktiv (${[hasARecord ? 'A' : null, hasAAAARecord ? 'AAAA' : null, hasMXRecord ? 'MX' : null].filter(Boolean).join('/')})`
+                : (isNxDomain ? 'NXDOMAIN (existiert nicht)' : 'Keine A/AAAA/MX Records')
+        };
+
+        if (!domainExists && cfg.domainExists.stopOnFail !== false) {
+            console.log('The domain has no A/AAAA/MX record or does not exist:', domain);
+            return {
+                score,
+                isSpam: score < settings.spamThreshold,
+                checks
+            };
+        }
+    } else {
+        checks.domainExists = { enabled: false, passed: domainExists, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 2. DNSSEC check
+    const hasDNSSEC = Boolean((aRecordData && aRecordData.AD === true) || (mxRecordData && mxRecordData.AD === true));
+    if (cfg.dnssec && cfg.dnssec.enabled) {
+        const delta = hasDNSSEC ? 0 : Number(cfg.dnssec.score ?? -10);
+        score += delta;
+        if (!hasDNSSEC) {
+            console.log('The domain has no valid DNSSEC signature:', domain);
+        }
+        checks.dnssec = {
+            enabled: true,
+            passed: hasDNSSEC,
+            scoreDelta: delta,
+            info: hasDNSSEC ? 'DNSSEC gültig (AD=true)' : 'Keine DNSSEC-Signatur'
+        };
+    } else {
+        checks.dnssec = { enabled: false, passed: hasDNSSEC, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 3. MX record check
+    if (cfg.mx && cfg.mx.enabled) {
+        const delta = hasMXRecord ? 0 : Number(cfg.mx.score ?? -20);
+        score += delta;
+        if (!hasMXRecord) {
+            console.log('The domain has no MX record:', domain);
+        }
+        checks.mx = {
+            enabled: true,
+            passed: hasMXRecord,
+            scoreDelta: delta,
+            info: hasMXRecord ? `MX vorhanden (${mxRecordData.Answer.length})` : 'Kein MX-Record'
+        };
+    } else {
+        checks.mx = { enabled: false, passed: hasMXRecord, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 4. SPF record check
+    let spfRecord = null;
+    if ((cfg.spf && cfg.spf.enabled) || (cfg.spfIpMatch && cfg.spfIpMatch.enabled)) {
+        spfRecord = await getSPFRecord(domain);
+    }
+
+    if (cfg.spf && cfg.spf.enabled) {
+        const hasSPF = spfRecord != null;
+        const delta = hasSPF ? 0 : Number(cfg.spf.score ?? -50);
+        score += delta;
+        if (!hasSPF) {
+            console.log('Invalid/NO SPF record for the domain:', domain);
+        }
+        checks.spf = {
+            enabled: true,
+            passed: hasSPF,
+            scoreDelta: delta,
+            info: hasSPF ? spfRecord.replace(/"/g, '') : 'Kein SPF-Record (v=spf1)'
+        };
+    } else {
+        checks.spf = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 5. DKIM record check
+    if (cfg.dkim && cfg.dkim.enabled) {
+        const dkimInfo = getDKIMInfo(dkimSig);
+        if (!dkimInfo || !dkimInfo.selector) {
+            console.log('Missing DKIM signature or selector for the domain:', domain);
+            const delta = Number(cfg.dkim.score ?? -20);
+            score += delta;
+            checks.dkim = {
+                enabled: true,
+                passed: false,
+                scoreDelta: delta,
+                info: 'Kein DKIM-Signature Header in E-Mail'
+            };
+        } else {
+            const dkimDomain = dkimInfo.domain || domain;
+            const dkimRecord = await getDKIMRecord(dkimDomain, dkimInfo.selector);
+            const hasDKIM = dkimRecord != null;
+            const delta = hasDKIM ? 0 : Number(cfg.dkim.score ?? -20);
+            score += delta;
+            if (!hasDKIM) {
+                console.log('Invalid/NO DKIM record for the domain:', dkimDomain);
+            }
+            checks.dkim = {
+                enabled: true,
+                passed: hasDKIM,
+                scoreDelta: delta,
+                info: hasDKIM
+                    ? `DKIM Schlüssel gefunden (${dkimInfo.selector}._domainkey.${dkimDomain})`
+                    : `Kein DNS-Eintrag für ${dkimInfo.selector}._domainkey.${dkimDomain}`
+            };
+        }
+    } else {
+        checks.dkim = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 6. DMARC record & policy check (_dmarc.<domain>)
+    if (cfg.dmarc && cfg.dmarc.enabled) {
+        const dmarcRes = await getDMARCRecord(domain);
+        const penalizeNone = cfg.dmarc.penalizeNone !== false;
+        let passed = false;
+        let info = 'Kein DMARC-Record (_dmarc)';
+
+        if (dmarcRes && dmarcRes.record) {
+            if (dmarcRes.policy === 'reject' || dmarcRes.policy === 'quarantine') {
+                passed = true;
+                info = `DMARC aktiv (p=${dmarcRes.policy})`;
+            } else if (dmarcRes.policy === 'none') {
+                passed = !penalizeNone;
+                info = penalizeNone
+                    ? 'DMARC hat nur p=none (keine Durchsetzung / typisch für Spam-Domains)'
+                    : 'DMARC vorhanden (p=none)';
+            } else {
+                passed = true;
+                info = `DMARC vorhanden (${dmarcRes.record})`;
+            }
+        }
+
+        const delta = passed ? 0 : Number(cfg.dmarc.score ?? -20);
+        score += delta;
+        checks.dmarc = {
+            enabled: true,
+            passed,
+            scoreDelta: delta,
+            info
+        };
+    } else {
+        checks.dmarc = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 7. Domain Registration Age (RDAP check for Newly Registered Domains)
+    if (cfg.domainAge && cfg.domainAge.enabled) {
+        const minAgeDays = Math.max(1, Number(cfg.domainAge.minAgeDays) || 90);
+        const ageRes = await getDomainAgeRDAP(domain);
+
+        if (!ageRes.available) {
+            // Do not penalize TLDs that do not offer public RDAP (e.g. .de)
+            checks.domainAge = {
+                enabled: true,
+                passed: true,
+                scoreDelta: 0,
+                info: `RDAP für TLD nicht verfügbar (${ageRes.reason || 'übersprungen'})`
+            };
+        } else {
+            const isOldEnough = ageRes.ageDays >= minAgeDays;
+            const delta = isOldEnough ? 0 : Number(cfg.domainAge.score ?? -40);
+            score += delta;
+            const regDateShort = ageRes.regDate ? ageRes.regDate.slice(0, 10) : '';
+            checks.domainAge = {
+                enabled: true,
+                passed: isOldEnough,
+                scoreDelta: delta,
+                info: isOldEnough
+                    ? `Alter: ${ageRes.ageDays} Tage (registriert ${regDateShort}, >= ${minAgeDays}d)`
+                    : `Frisch registriert: erst ${ageRes.ageDays} Tage alt (${regDateShort}, < ${minAgeDays}d)`
+            };
+        }
+    } else {
+        checks.domainAge = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // Extract IPv4 from A record or Received header for DNSBL & SPF-IP checks
+    const aRecordIps = (hasARecord && Array.isArray(aRecordData.Answer))
+        ? aRecordData.Answer.filter(r => r.type === 1 && typeof r.data === 'string').map(r => r.data.trim())
+        : [];
+    const senderIp = extractSenderIPFromHeaders(headers);
+
+    // 8. DNSBL (Domain & IP Blacklist check via DoH)
+    if (cfg.dnsbl && cfg.dnsbl.enabled) {
+        const ipToCheck = senderIp || (aRecordIps.length > 0 ? aRecordIps[0] : null);
+        const blRes = await checkDNSBL(domain, ipToCheck);
+        const passed = !blRes.listed;
+        const delta = passed ? 0 : Number(cfg.dnsbl.score ?? -80);
+        score += delta;
+        checks.dnsbl = {
+            enabled: true,
+            passed,
+            scoreDelta: delta,
+            info: passed
+                ? `Nicht gelistet (${ipToCheck ? `Domain + IP ${ipToCheck}` : 'Domain'})`
+                : `Gelistet auf Blacklist: ${blRes.lists.join(', ')}`
+        };
+    } else {
+        checks.dnsbl = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    // 9. SPF Sender-IP / Authentication-Results Verification
+    if (cfg.spfIpMatch && cfg.spfIpMatch.enabled) {
+        const spfEval = evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps);
+        const passed = spfEval.passed;
+        const delta = passed ? 0 : Number(cfg.spfIpMatch.score ?? -40);
+        score += delta;
+        checks.spfIpMatch = {
+            enabled: true,
+            passed,
+            scoreDelta: delta,
+            info: spfEval.info
+        };
+    } else {
+        checks.spfIpMatch = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
+    }
+
+    return {
+        score,
+        isSpam: score < settings.spamThreshold,
+        checks
+    };
+}
+
+/**
+ * Validate the given domain, of its existence, by the SPF record and the DKIM signature of the EMAIL header.
+ * It will return a score based on the criticality of its checks. A negative score means that it fails some checks.
+ * @param {string} domain the domain read from the original (sender) address
+ * @param {string[]} dkimSig the DKIM signature read from the email header "message.headers['dkim-signature']"
+ * @returns {Promise<number>} the score of the validation.
+ */
+async function validateDomain(domain, dkimSig) {
+    const result = await validateDomainDetailed(domain, dkimSig);
+    return result.score;
+}
+
+/**
+ * Fetches the DMARC record (_dmarc.<domain>, with fallback to organizational domain)
+ * and extracts the policy (p=none | quarantine | reject).
+ * @param {string} domain
+ * @returns {Promise<{ record: string, policy: string|null } | null>}
+ */
+async function getDMARCRecord(domain) {
+    if (!domain) return null;
+
+    async function queryDmarcFor(target) {
+        const data = await getDNSEntry(`_dmarc.${target}`, 'TXT');
+        if (!data || data.Status !== 0 || !Array.isArray(data.Answer)) {
+            return null;
+        }
+        const rec = data.Answer.find(r => {
+            if (typeof r.data !== 'string') return false;
+            return r.data.replace(/"/g, '').trim().toUpperCase().startsWith('V=DMARC1');
+        });
+        if (!rec) return null;
+        const clean = rec.data.replace(/"/g, '').trim();
+        const policyMatch = clean.match(/(?:^|;)\s*p\s*=\s*([a-zA-Z]+)/i);
+        return {
+            record: clean,
+            policy: policyMatch ? policyMatch[1].toLowerCase() : null
+        };
+    }
+
+    let res = await queryDmarcFor(domain);
+    if (!res) {
+        const rootDomain = getRegistrableDomain(domain);
+        if (rootDomain && rootDomain !== domain) {
+            res = await queryDmarcFor(rootDomain);
+        }
+    }
+    return res;
+}
+
+/**
+ * Queries RDAP (https://rdap.org/domain/<rootDomain>) to determine the registration age in days.
+ * Results are cached in memory for 60 minutes.
+ * @param {string} domain
+ * @returns {Promise<{ available: boolean, ageDays?: number, regDate?: string, reason?: string }>}
+ */
+async function getDomainAgeRDAP(domain) {
+    const rootDomain = getRegistrableDomain(domain);
+    if (!rootDomain) {
+        return { available: false, reason: 'Ungültige Domain' };
+    }
+
+    const now = Date.now();
+    const cached = g_RDAP_CACHE.get(rootDomain);
+    if (cached && (now - cached.timestamp) < g_RDAP_CACHE_TTL_MS) {
+        return cached.result;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    try {
+        const url = `${g_RDAP_SERVICE_URL}${encodeURIComponent(rootDomain)}`;
+        const response = await fetch(url, {
+            headers: {
+                'accept': 'application/rdap+json, application/json'
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            const result = { available: false, reason: `HTTP ${response.status}` };
+            g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
+            return result;
+        }
+
+        const data = await response.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        const regEvent = events.find(e => e && (e.eventAction === 'registration' || e.eventAction === 'registered'));
+        if (!regEvent || !regEvent.eventDate) {
+            const result = { available: false, reason: 'Kein Registrierungsdatum im RDAP' };
+            g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
+            return result;
+        }
+
+        const regTime = new Date(regEvent.eventDate).getTime();
+        if (Number.isNaN(regTime)) {
+            return { available: false, reason: 'Ungültiges Datum' };
+        }
+
+        const ageDays = Math.max(0, Math.floor((now - regTime) / (1000 * 60 * 60 * 24)));
+        const result = {
+            available: true,
+            ageDays,
+            regDate: regEvent.eventDate
+        };
+        g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
+        return result;
+    } catch (err) {
+        clearTimeout(timeoutId);
+        return { available: false, reason: err.name === 'AbortError' ? 'Timeout' : 'Netzwerkfehler' };
+    }
+}
+
+/**
+ * Checks domain and optional IPv4 address against DNS-based blacklists via DoH.
+ * Ignores public-resolver policy/error return codes in 127.255.255.0/24.
+ * @param {string} domain
+ * @param {string|null} ipv4
+ * @returns {Promise<{ listed: boolean, lists: string[] }>}
+ */
+async function checkDNSBL(domain, ipv4 = null) {
+    const rootDomain = getRegistrableDomain(domain) || domain;
+    const queries = [
+        { label: 'Nordspam DBL', host: `${rootDomain}.dbl.nordspam.com` },
+        { label: 'Spamhaus DBL', host: `${rootDomain}.dbl.spamhaus.org` }
+    ];
+
+    if (ipv4 && /^\d{1,3}(\.\d{1,3}){3}$/.test(ipv4)) {
+        const reversedIp = ipv4.split('.').reverse().join('.');
+        queries.push(
+            { label: 'Nordspam IP-BL', host: `${reversedIp}.bl.nordspam.com` },
+            { label: 'SpamCop BL', host: `${reversedIp}.bl.spamcop.net` },
+            { label: '0spam BL', host: `${reversedIp}.bl.0spam.org` }
+        );
+    }
+
+    const results = await Promise.all(
+        queries.map(async (q) => {
+            const data = await getDNSEntry(q.host, 'A', true);
+            if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
+                return null;
+            }
+            // Valid DNSBL positive hits return 127.0.x.x (ignore 127.255.255.* open-resolver error codes)
+            const validHit = data.Answer.find(a =>
+                a.type === 1 &&
+                typeof a.data === 'string' &&
+                a.data.startsWith('127.0.') &&
+                !a.data.startsWith('127.255.')
+            );
+            return validHit ? `${q.label} (${validHit.data})` : null;
+        })
+    );
+
+    const lists = results.filter(Boolean);
+    return {
+        listed: lists.length > 0,
+        lists
+    };
+}
+
+/**
+ * Extracts the external sender IPv4 address from message 'received' headers
+ * @param {object|null} headers
+ * @returns {string|null}
+ */
+function extractSenderIPFromHeaders(headers) {
+    if (!headers || typeof headers !== 'object') {
+        return null;
+    }
+    const received = headers['received'];
+    if (!Array.isArray(received) || received.length === 0) {
+        return null;
+    }
+
+    function isPublicIPv4(ip) {
+        const parts = ip.split('.').map(Number);
+        if (parts.length !== 4 || parts.some(n => Number.isNaN(n) || n < 0 || n > 255)) return false;
+        if (parts[0] === 10 || parts[0] === 127 || parts[0] === 0) return false;
+        if (parts[0] === 192 && parts[1] === 168) return false;
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return false;
+        return true;
+    }
+
+    for (const line of received) {
+        if (typeof line !== 'string') continue;
+        const matches = line.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/g);
+        if (matches) {
+            const pub = matches.find(isPublicIPv4);
+            if (pub) return pub;
+        }
+    }
+    return null;
+}
+
+/**
+ * Evaluates whether the message's headers or sender IP violate the domain's SPF policy
+ * @param {object|null} headers
+ * @param {string|null} spfRecord
+ * @param {string[]} aRecordIps
+ * @returns {{ passed: boolean, info: string }}
+ */
+function evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps = []) {
+    if (!headers || typeof headers !== 'object') {
+        return {
+            passed: true,
+            info: 'Keine E-Mail-Header (Manueller Domain-Test)'
+        };
+    }
+
+    // 1. Check Authentication-Results or Received-SPF header if added by receiving mail server
+    const authResults = [].concat(headers['authentication-results'] || [], headers['received-spf'] || []).join(' \n ');
+    if (authResults) {
+        if (/\bspf\s*=\s*(fail|softfail|permerror)\b/i.test(authResults) || /^fail\b/i.test(authResults.trim())) {
+            return {
+                passed: false,
+                info: 'Laut Mailserver-Header ist SPF fehlgeschlagen (spf=fail/softfail)'
+            };
+        }
+        if (/\bspf\s*=\s*pass\b/i.test(authResults) || /^pass\b/i.test(authResults.trim())) {
+            return {
+                passed: true,
+                info: 'SPF-IP laut Mailserver-Header autorisiert (spf=pass)'
+            };
+        }
+    }
+
+    // 2. Fallback: compare sender IP from Received header against explicit ip4: / a mechanisms when "-all" or "~all" is used
+    const senderIp = extractSenderIPFromHeaders(headers);
+    if (!senderIp || !spfRecord) {
+        return {
+            passed: true,
+            info: senderIp ? `Einlieferungs-IP: ${senderIp}` : 'Keine externe Einlieferungs-IP im Header'
+        };
+    }
+
+    const cleanSpf = spfRecord.replace(/"/g, '').trim();
+    const hasIncludeOrRedirect = /\b(include:|redirect=|exists:)/i.test(cleanSpf);
+    const isStrictAll = /\s[-~]all\b/i.test(cleanSpf);
+
+    if (!hasIncludeOrRedirect && isStrictAll) {
+        const allowedIps = new Set(aRecordIps);
+        const ip4Matches = cleanSpf.match(/\bip4:(\d{1,3}(?:\.\d{1,3}){3})(?:\/\d+)?\b/gi) || [];
+        for (const m of ip4Matches) {
+            const ip = m.replace(/^ip4:/i, '').split('/')[0];
+            allowedIps.add(ip);
+        }
+
+        if (allowedIps.size > 0 && !allowedIps.has(senderIp)) {
+            return {
+                passed: false,
+                info: `Einlieferungs-IP (${senderIp}) stimmt nicht mit SPF (${Array.from(allowedIps).join(', ')}) überein`
+            };
+        }
+    }
+
+    return {
+        passed: true,
+        info: `Einlieferungs-IP (${senderIp}) plausibel`
+    };
+}
+
+/**
+ * Fetches the SPF record from the given domain by using cloudflare as DoH service
+ * @param {string} domain the domain to read the SPF record from
+ * @returns {Promise<string|null>} the SPF result if available, otherwise it will return null
+ */
+async function getSPFRecord(domain) {
+    const data = await getDNSEntry(domain, 'TXT');
+    if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
+        console.warn(`Keine TXT-Einträge für ${domain} gefunden.`);
+        return null;
+    }
+
+    // Filtern Sie nach SPF-Einträgen (z.B. "v=spf1 ...")
+    const spfRecord = data.Answer.find(rec => {
+        if (typeof rec.data !== 'string') return false;
+        const recordData = rec.data.replace(/"/g, '').trim();
+        return recordData.toLowerCase().startsWith('v=spf1');
+    });
+
+    return spfRecord ? spfRecord.data : null;
+}
+
+/**
+ * Reads the DKIM record via cloudflare (DoH service) and returns it, or null if the entry could not be found.
+ * @param {string} domain the domain to check
+ * @param {string} selector DKIM selector read from the Email header ([Selektor]._domainkey.[Domäne])
+ * @returns {Promise<object|null>}
+ */
+async function getDKIMRecord(domain, selector) {
+    if (!domain || !selector) {
+        return null;
+    }
+
+    // Der DoH-Endpunkt und die spezifische DNS-Anfrage für den DKIM-Eintrag.
+    const query = `${selector}._domainkey.${domain}`;
+    const data = await getDNSEntry(query, 'TXT');
+
+    // Suchen nach dem DKIM-TXT-Eintrag, der den öffentlichen Schlüssel enthält.
+    if (data && Array.isArray(data.Answer) && data.Answer.length > 0) {
+        const dkimEntry = data.Answer.find(rec => {
+            if (typeof rec.data !== 'string') return false;
+            const normalized = rec.data.replace(/"\s*"/g, '').replace(/"/g, '');
+            return normalized.includes('p=') || normalized.includes('v=DKIM1') || normalized.includes('k=rsa');
+        });
+        if (dkimEntry != null) {
+            return dkimEntry;
+        }
+    }
+
+    console.log(`Kein DKIM-Eintrag gefunden für: ${query}`);
+    return null;
+}
+
+/**
+ * Extracts both the DKIM selector (s=) and signing domain (d=) from the first DKIM-Signature header.
+ * @param {string[]} dkimHeaders usually the result from message.headers['dkim-signature']
+ * @returns {{ selector: string|null, domain: string|null } | null}
+ */
+function getDKIMInfo(dkimHeaders) {
+    if (!Array.isArray(dkimHeaders) || dkimHeaders.length === 0 || !dkimHeaders[0]) {
+        console.log('Keine DKIM-Header in der Nachricht gefunden.');
+        return null;
+    }
+
+    const dkimHeaderString = dkimHeaders[0];
+    const parts = dkimHeaderString.split(';');
+    let selector = null;
+    let domain = null;
+
+    for (const part of parts) {
+        const trimmedPart = part.replace(/\s+/g, '');
+        if (trimmedPart.startsWith('s=')) {
+            selector = trimmedPart.substring(2);
+        } else if (trimmedPart.startsWith('d=')) {
+            domain = trimmedPart.substring(2).toLowerCase();
+        }
+    }
+
+    if (!selector) {
+        console.log('Kein Selektor im ersten DKIM-Header gefunden.', dkimHeaderString);
+        return null;
+    }
+
+    return { selector, domain };
+}
+
+/**
+ * Read the DKIM selector part from the first DKIM header and return it.
+ * @param {string[]} dkimHeaders usually the result from the message.headers['dkim-signature'];
+ * @returns {string|null} the found DKIM selector or null
+ */
+function getDKIMSelector(dkimHeaders) {
+    const info = getDKIMInfo(dkimHeaders);
+    return info ? info.selector : null;
+}
+
+/**
+ * Checks if the given domain has a matching A record
+ * @param {string} domain the domain of which to read the A record from
+ * @returns {Promise<boolean>}
+ */
+async function doesDomainExist(domain) {
+    const answer = await getDNSEntry(domain, 'A');
+    return (answer != null);
+}
+
+/**
+ * Checks if the given domain has a matching A record and DNSSEC-Signature
+ * @param {string} domain the domain of which to read the A record from
+ * @returns {Promise<boolean>}
+ */
+async function hasValidDNSSEC(domain) {
+    const answer = await getDNSEntry(domain, 'A');
+    return (answer != null && answer.AD === true);
+}
+
+/**
+ * Checks if the given domain has a matching MX record
+ * @param {string} domain the domain of which to read the MX record from
+ * @returns {Promise<boolean>}
+ */
+async function hasDomainMXRecord(domain) {
+    const answer = await getDNSEntry(domain, 'MX');
+    return answer != null;
+}
+
+/**
+ * Fetches the given DNS type entry of the given domain by using cloudflare as DoH service.
+ * Returns the answer if it was available, otherwise it will return null (unless returnRawStatus is true).
+ * @param {string} domain the domain name to check
+ * @param {string} type the type of record to request (e.g. A, AAAA, MX, TXT)
+ * @param {boolean} [returnRawStatus=false] if true, returns the parsed JSON even when Answer is empty (to inspect Status like NXDOMAIN)
+ * @returns {Promise<object|null>} the result data (response.json()) of the response of the fetch request
+ */
+async function getDNSEntry(domain, type, returnRawStatus = false) {
+    if (!domain) {
+        return null;
+    }
+
+    const cacheKey = `${domain.toLowerCase()}:${type.toUpperCase()}`;
+    const now = Date.now();
+    const cached = g_DNS_CACHE.get(cacheKey);
+
+    let data = null;
+    if (cached && (now - cached.timestamp) < g_DNS_CACHE_TTL_MS) {
+        data = cached.data;
+    } else {
+        const url = `${g_DOH_SERVICE_URL}?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`;
+        const headers = { 'accept': 'application/dns-json' };
+
+        try {
+            const response = await fetch(url, { headers });
+            if (!response.ok) {
+                console.warn(`DoH HTTP-Fehler (${response.status}) für ${domain} (${type}).`);
+                return null;
+            }
+            data = await response.json();
+            g_DNS_CACHE.set(cacheKey, { timestamp: now, data });
+        } catch (error) {
+            console.error('Fehler bei der DNS-Abfrage:', error);
+            return null;
+        }
+    }
+
+    if (returnRawStatus) {
+        return data;
+    }
+
+    // Wenn die "Answer"-Sektion leer ist, hat die Domäne keinen entsprechenden Record.
+    if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
+        console.warn(`Domäne '${domain}' scheint nicht zu existieren oder hat keinen ${type}-Record.`);
+        return null;
+    }
+
+    return data; // Es wurden DNS-Einträge gefunden.
+}
+
+/**
+ * Performs a fetch operation for the given url with an optional timeout and measures the latency
+ * @param {string} url the url to fetch
+ * @param {number} [timeout=5000] optional timeout in ms
+ * @returns {Promise<{ success: boolean, latency: number }>} the time in milliseconds or -1 if it resulted in an error
+ */
+async function measureLatency(url, timeout = 5000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    const startTime = performance.now();
+
+    try {
+        const response = await fetch(url, {
+            method: 'HEAD', // HEAD ist schneller als GET
+            signal: controller.signal
+        });
+        clearTimeout(id);
+        const endTime = performance.now();
+        const latency = endTime - startTime;
+        return { success: response.ok, latency: latency };
+    } catch (error) {
+        clearTimeout(id);
+        if (error.name === 'AbortError') {
+            console.error('Anfrage wegen Timeout abgebrochen.');
+        } else {
+            console.error('Fetch-Anfrage fehlgeschlagen:', error);
+        }
+        return { success: false, latency: -1 };
+    }
+}
+
+/**
+ * Collects all folders across all accounts in a flat list for UI folder selection
+ */
+async function getAllFoldersList() {
+    if (!messenger.accounts || !messenger.accounts.list) {
+        return [];
+    }
+    const accounts = await messenger.accounts.list(true);
+    const result = [];
+
+    function walkFolders(folders, accountName, prefix = '') {
+        if (!Array.isArray(folders)) return;
+        for (const f of folders) {
+            const displayPath = prefix ? `${prefix} / ${f.name}` : f.name;
+            result.push({
+                id: f.id,
+                name: f.name,
+                accountId: f.accountId,
+                accountName,
+                displayPath: `${accountName}: ${displayPath}`,
+                specialUse: f.specialUse || []
+            });
+            if (Array.isArray(f.subFolders) && f.subFolders.length > 0) {
+                walkFolders(f.subFolders, accountName, displayPath);
+            }
+        }
+    }
+
+    for (const acc of accounts) {
+        walkFolders(acc.folders, acc.name);
+    }
+    return result;
+}
+
+/**
+ * Handles messages from Popup and Options/Diagnostics pages
+ */
+if (messenger.runtime && messenger.runtime.onMessage) {
+    messenger.runtime.onMessage.addListener(async (request) => {
+        if (!request || !request.action) {
+            return null;
+        }
+
+        try {
+            switch (request.action) {
+                case 'GET_STATE': {
+                    const settings = await getSettings();
+                    const logData = messenger.storage ? await messenger.storage.local.get('diagnosticLog') : {};
                     return {
-                        processed: g_SCAN_STATE.processed,
-                        spamCount: g_SCAN_STATE.spamCount,
-                        total: g_SCAN_STATE.total
+                        settings: JSON.parse(JSON.stringify(settings)),
+                        defaultSettings: cloneDefaults(),
+                        diagnosticLog: Array.isArray(logData.diagnosticLog) ? logData.diagnosticLog : [],
+                        scanState: Object.assign({}, g_SCAN_STATE),
+                        cacheSize: g_DNS_CACHE.size + g_RDAP_CACHE.size
                     };
                 }
 
-                // 2. Find the Junk folder for this account and move the message
-                try {
-                    const accountId = (sourceFolder && sourceFolder.accountId) || (message.folder && message.folder.accountId);
-                    if (!accountId) {
-                        return;
-                    }
-                    const junkFolders = await messenger.folders.query({
-                        accountId: accountId,
-                        specialUse: ['junk']
-                    });
-                    /**
-                     * Marks a message as junk and moves it to the account's Junk/Spam folder if available
-                     * @param {object} message the MessageHeader object
-                     * @param {object} sourceFolder the MailFolder where the message is currently located
-                     */
-                    async function markAndMoveToSpam(message, sourceFolder) {
-                        // 1. Mark message as Junk via messages.update
-                        try {
-                            await messenger.messages.update(message.id, { junk: true });
-                        } catch (err) {
-                            console.warn(`Could not update junk flag on message ${message.id}:`, err);
-                        }
-
-                        if (junkFolders && junkFolders.length > 0) {
-                            const targetFolderId = junkFolders[0].id;
-                            if (!sourceFolder || sourceFolder.id !== targetFolderId) {
-                                await messenger.messages.move([message.id], targetFolderId);
-                            }
-                        } else {
-                            console.warn(`No Junk folder found for account ${accountId}. Message was marked as junk in place.`);
-                        }
-                    } catch (err) {
-                        console.error(`Failed to move message ${message.id} to Junk folder:`, err);
-                    }
-                    // 2. Find the Junk folder for this account and move the message
-                    try {
-                        const accountId = (sourceFolder && sourceFolder.accountId) || (message.folder && message.folder.accountId);
-                        if (!accountId) {
-                            return;
-                        }
-                        const junkFolders = await messenger.folders.query({
-                            accountId: accountId,
-                            specialUse: ['junk']
-                        });
-
-                        if (junkFolders && junkFolders.length > 0) {
-                            const targetFolderId = junkFolders[0].id;
-                            if (!sourceFolder || sourceFolder.id !== targetFolderId) {
-                                await messenger.messages.move([message.id], targetFolderId);
-                            }
-                        } else {
-                            console.warn(`No Junk folder found for account ${accountId}. Message was marked as junk in place.`);
-                        }
-                    } catch (err) {
-                        console.error(`Failed to move message ${message.id} to Junk folder:`, err);
-                    }
+                case 'SAVE_SETTINGS': {
+                    const current = await getSettings();
+                    const nextSettings = Object.assign({}, current, request.settings || {});
+                    await messenger.storage.local.set({ settings: nextSettings });
+                    return { success: true, settings: JSON.parse(JSON.stringify(nextSettings)) };
                 }
 
-            /**
-             * Extracts the sender domain using Thunderbird's RFC 5322 parser (messengerUtilities.parseMailboxString)
-             * with a fallback to manual string parsing.
-             * @param {string} senderAddress 
-             * @returns {Promise<string|null>}
-             */
-                async function extractDomainFromAuthor(senderAddress) {
-                    if (!senderAddress || typeof senderAddress !== 'string') {
-                        return null;
-                    }
-                    /**
-                     * Extracts the sender domain using Thunderbird's RFC 5322 parser (messengerUtilities.parseMailboxString)
-                     * with a fallback to manual string parsing.
-                     * @param {string} senderAddress 
-                     * @returns {Promise<string|null>}
-                     */
-                    async function extractDomainFromAuthor(senderAddress) {
-                        if (!senderAddress || typeof senderAddress !== 'string') {
-                            return null;
-                        }
-
-                        if (messenger.messengerUtilities && typeof messenger.messengerUtilities.parseMailboxString === 'function') {
-                            try {
-                                const parsed = await messenger.messengerUtilities.parseMailboxString(senderAddress);
-                                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].email) {
-                                    return getDomainFromAddress(parsed[0].email);
-                                }
-                            } catch (err) {
-                                console.warn('parseMailboxString failed, falling back to manual parsing:', err);
-                            }
-                        }
-                        if (messenger.messengerUtilities && typeof messenger.messengerUtilities.parseMailboxString === 'function') {
-                            try {
-                                const parsed = await messenger.messengerUtilities.parseMailboxString(senderAddress);
-                                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].email) {
-                                    return getDomainFromAddress(parsed[0].email);
-                                }
-                            } catch (err) {
-                                console.warn('parseMailboxString failed, falling back to manual parsing:', err);
-                            }
-                        }
-
-                        return getDomainFromAddress(senderAddress);
-                    }
-                    return getDomainFromAddress(senderAddress);
+                case 'RESET_SETTINGS': {
+                    const defaults = cloneDefaults();
+                    await messenger.storage.local.set({ settings: defaults });
+                    return { success: true, settings: defaults };
                 }
 
-                /**
-                 * Parses the given sender address and returns just the domain
-                 * @param {string} senderAddress 
-                 */
-                function getDomainFromAddress(senderAddress) {
-                    if (!senderAddress || typeof senderAddress !== 'string') {
-                        return null;
-                    }
-                    /**
-                     * Parses the given sender address (or plain domain) and returns just the domain
-                     * @param {string} senderAddress 
-                     */
-                    function getDomainFromAddress(senderAddress) {
-                        if (!senderAddress || typeof senderAddress !== 'string') {
-                            return null;
-                        }
-
-                        // Falls eine Adresse in spitzen Klammern steht (z.B. "Name <user@domain.tld>"), extrahiere den Teil darin
-                        const angleMatch = senderAddress.match(/<([^<>]+)>/);
-                        const addressPart = angleMatch ? angleMatch[1] : senderAddress;
-                        // Falls eine Adresse in spitzen Klammern steht (z.B. "Name <user@domain.tld>"), extrahiere den Teil darin
-                        const angleMatch = senderAddress.match(/<([^<>]+)>/);
-                        const addressPart = angleMatch ? angleMatch[1] : senderAddress;
-
-                        const atIndex = addressPart.lastIndexOf('@');
-                        if (atIndex === -1) {
-                            return null;
-                        }
-                        const atIndex = addressPart.lastIndexOf('@');
-                        if (atIndex === -1) {
-                            return null;
-                        }
-
-                        let domain = addressPart.slice(atIndex + 1).trim();
-                        // Entfernt eventuelle Restzeichen wie ">", Anführungszeichen oder Leerzeichen
-                        domain = domain.replace(/[>"'\s]+$/g, '').toLowerCase();
-                        let domain = addressPart.slice(atIndex + 1).trim();
-                        // Entfernt eventuelle Restzeichen wie ">", Anführungszeichen oder Leerzeichen
-                        domain = domain.replace(/[>"'\s]+$/g, '').toLowerCase();
-
-                        return domain || null;
-                    }
-                    return domain || null;
+                case 'CLEAR_LOG': {
+                    await messenger.storage.local.set({ diagnosticLog: [] });
+                    notifyUI({ type: 'LOG_UPDATED', entry: null, scanState: g_SCAN_STATE });
+                    return { success: true };
                 }
 
-                /**
-                 * Validate the given domain, of its existence, by the SPF record and the DKIM signature of the EMAIL header.
-                 * It will return a score based on the criticality of its checks. A negative score means that it fails some checks.
-                 * @param {string} domain the domain read from the original (sender) address
-                 * @param {string[]} dkimSig the DKIM signature read from the email header "message.headers['dkim-signature']"
-                 * @returns {Promise<number>} the score of the validation. If the domain does not exist it returns a score of -100. The lower the score the more checks have been failed.
-                 */
-                async function validateDomain(domain, dkimSig) {
-                    // Perform A and MX record lookups in parallel
-                    const [aRecordData, mxRecordData] = await Promise.all([
-                        getDNSEntry(domain, 'A', true),
-                        getDNSEntry(domain, 'MX', true)
-                    ]);
-                    /**
-                     * Validates a domain and returns both the total score and a detailed breakdown of each check.
-                     * @param {string} domain the sender domain
-                     * @param {string[]|null} dkimSig the dkim-signature header array
-                     * @param {object} [customSettings] optional settings object (loaded from storage if omitted)
-                     * @returns {Promise<{ score: number, isSpam: boolean, checks: object }>}
-                     */
-                    async function validateDomainDetailed(domain, dkimSig, customSettings = null) {
-                        const settings = customSettings || await getSettings();
-                        const cfg = settings.checks || DEFAULT_SETTINGS.checks;
-                        const checks = {};
-                        let score = 0;
-
-                        // Status === 3 means NXDOMAIN (domain does not exist at all in DNS)
-                        const isNxDomain = (aRecordData && aRecordData.Status === 3) || (mxRecordData && mxRecordData.Status === 3);
-                        const hasARecord = Boolean(aRecordData && aRecordData.Status === 0 && Array.isArray(aRecordData.Answer) && aRecordData.Answer.length > 0);
-                        const hasMXRecord = Boolean(mxRecordData && mxRecordData.Status === 0 && Array.isArray(mxRecordData.Answer) && mxRecordData.Answer.length > 0);
-                        // Perform A and MX record lookups in parallel
-                        const [aRecordData, mxRecordData] = await Promise.all([
-                            getDNSEntry(domain, 'A', true),
-                            getDNSEntry(domain, 'MX', true)
-                        ]);
-
-                        // If neither A nor MX exists, also check AAAA before declaring the domain dead
-                        if (isNxDomain || (!hasARecord && !hasMXRecord)) {
-                            const aaaaRecordData = isNxDomain ? null : await getDNSEntry(domain, 'AAAA', true);
-                            const hasAAAARecord = Boolean(aaaaRecordData && aaaaRecordData.Status === 0 && Array.isArray(aaaaRecordData.Answer) && aaaaRecordData.Answer.length > 0);
-                            const isNxDomain = (aRecordData && aRecordData.Status === 3) || (mxRecordData && mxRecordData.Status === 3);
-                            const hasARecord = Boolean(aRecordData && aRecordData.Status === 0 && Array.isArray(aRecordData.Answer) && aRecordData.Answer.length > 0);
-                            const hasMXRecord = Boolean(mxRecordData && mxRecordData.Status === 0 && Array.isArray(mxRecordData.Answer) && mxRecordData.Answer.length > 0);
-
-                            if (isNxDomain || !hasAAAARecord) {
-                                console.log('The domain has no A/AAAA/MX record or does not exist:', domain);
-                                return -100;
-                            }
-                        }
-                        let hasAAAARecord = false;
-                        if (!isNxDomain && !hasARecord && !hasMXRecord) {
-                            const aaaaRecordData = await getDNSEntry(domain, 'AAAA', true);
-                            hasAAAARecord = Boolean(aaaaRecordData && aaaaRecordData.Status === 0 && Array.isArray(aaaaRecordData.Answer) && aaaaRecordData.Answer.length > 0);
-                        }
-
-                        let score = 0;
-                        const domainExists = !isNxDomain && (hasARecord || hasMXRecord || hasAAAARecord);
-
-                        // Check DNSSEC from the already fetched A or MX response
-                        const hasDNSSEC = Boolean((aRecordData && aRecordData.AD === true) || (mxRecordData && mxRecordData.AD === true));
-                        if (!hasDNSSEC) {
-                            console.log('The domain has no valid DNSSEC signature:', domain);
-                            score -= 10;
-                        }
-                        // 1. Domain existence check
-                        if (cfg.domainExists && cfg.domainExists.enabled) {
-                            const delta = domainExists ? 0 : Number(cfg.domainExists.score ?? -100);
-                            score += delta;
-                            checks.domainExists = {
-                                enabled: true,
-                                passed: domainExists,
-                                scoreDelta: delta,
-                                info: domainExists
-                                    ? `DNS aktiv (${[hasARecord ? 'A' : null, hasAAAARecord ? 'AAAA' : null, hasMXRecord ? 'MX' : null].filter(Boolean).join('/')})`
-                                    : (isNxDomain ? 'NXDOMAIN (existiert nicht)' : 'Keine A/AAAA/MX Records')
-                            };
-
-                            // Check if the domain has an MX record
-                            if (!hasMXRecord) {
-                                console.log('The domain has no MX record:', domain);
-                                score -= 20;
-                            }
-                            if (!domainExists && cfg.domainExists.stopOnFail !== false) {
-                                console.log('The domain has no A/AAAA/MX record or does not exist:', domain);
-                                return {
-                                    score,
-                                    isSpam: score < settings.spamThreshold,
-                                    checks
-                                };
-                            }
-                        } else {
-                            checks.domainExists = { enabled: false, passed: domainExists, scoreDelta: 0, info: 'Deaktiviert' };
-                        }
-
-                        // Check the SPF record
-                        const spfRecord = await getSPFRecord(domain);
-                        if (spfRecord == null) {
-                            console.log('Invalid/NO SPF record for the domain:', domain);
-                            score -= 50;
-                        }
-                        // 2. DNSSEC check
-                        const hasDNSSEC = Boolean((aRecordData && aRecordData.AD === true) || (mxRecordData && mxRecordData.AD === true));
-                        if (cfg.dnssec && cfg.dnssec.enabled) {
-                            const delta = hasDNSSEC ? 0 : Number(cfg.dnssec.score ?? -10);
-                            score += delta;
-                            if (!hasDNSSEC) {
-                                console.log('The domain has no valid DNSSEC signature:', domain);
-                            }
-                            checks.dnssec = {
-                                enabled: true,
-                                passed: hasDNSSEC,
-                                scoreDelta: delta,
-                                info: hasDNSSEC ? 'DNSSEC gültig (AD=true)' : 'Keine DNSSEC-Signatur'
-                            };
-                        } else {
-                            checks.dnssec = { enabled: false, passed: hasDNSSEC, scoreDelta: 0, info: 'Deaktiviert' };
-                        }
-
-                        // Check the DKIM record
-                        const dkimInfo = getDKIMInfo(dkimSig);
-                        if (!dkimInfo || !dkimInfo.selector) {
-                            console.log('Missing DKIM signature or selector for the domain:', domain);
-                            score -= 20;
-                        } else {
-                            const dkimDomain = dkimInfo.domain || domain;
-                            const dkimRecord = await getDKIMRecord(dkimDomain, dkimInfo.selector);
-                            if (dkimRecord == null) {
-                                console.log('Invalid/NO DKIM record for the domain:', dkimDomain);
-                                score -= 20;
-                            }
-                        }
-                        // 3. MX record check
-                        if (cfg.mx && cfg.mx.enabled) {
-                            const delta = hasMXRecord ? 0 : Number(cfg.mx.score ?? -20);
-                            score += delta;
-                            if (!hasMXRecord) {
-                                console.log('The domain has no MX record:', domain);
-                            }
-                            checks.mx = {
-                                enabled: true,
-                                passed: hasMXRecord,
-                                scoreDelta: delta,
-                                info: hasMXRecord ? `MX vorhanden (${mxRecordData.Answer.length})` : 'Kein MX-Record'
-                            };
-                        } else {
-                            checks.mx = { enabled: false, passed: hasMXRecord, scoreDelta: 0, info: 'Deaktiviert' };
-                        }
-
-                        return score;
-                    }
-                    // 4. SPF record check
-                    if (cfg.spf && cfg.spf.enabled) {
-                        const spfRecord = await getSPFRecord(domain);
-                        const hasSPF = spfRecord != null;
-                        const delta = hasSPF ? 0 : Number(cfg.spf.score ?? -50);
-                        score += delta;
-                        if (!hasSPF) {
-                            console.log('Invalid/NO SPF record for the domain:', domain);
-                        }
-                        checks.spf = {
-                            enabled: true,
-                            passed: hasSPF,
-                            scoreDelta: delta,
-                            info: hasSPF ? spfRecord.replace(/"/g, '') : 'Kein SPF-Record (v=spf1)'
-                        };
-                    } else {
-                        checks.spf = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
-                    }
-
-                    /**
-                     * Fetches the SPF record from the given domain by using cloudflare as DoH service
-                     * @param {string} domain the domain to read the SPF record from
-                     * @returns {Promise<string|null>} the SPF result if available, otherwise it will return null
-                     */
-                    async function getSPFRecord(domain) {
-                        const data = await getDNSEntry(domain, 'TXT');
-                        if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
-                            console.warn(`Keine TXT-Einträge für ${domain} gefunden.`);
-                            return null;
-                        }
-                        // 5. DKIM record check
-                        if (cfg.dkim && cfg.dkim.enabled) {
-                            const dkimInfo = getDKIMInfo(dkimSig);
-                            if (!dkimInfo || !dkimInfo.selector) {
-                                console.log('Missing DKIM signature or selector for the domain:', domain);
-                                const delta = Number(cfg.dkim.score ?? -20);
-                                score += delta;
-                                checks.dkim = {
-                                    enabled: true,
-                                    passed: false,
-                                    scoreDelta: delta,
-                                    info: 'Kein DKIM-Signature Header in E-Mail'
-                                };
-                            } else {
-                                const dkimDomain = dkimInfo.domain || domain;
-                                const dkimRecord = await getDKIMRecord(dkimDomain, dkimInfo.selector);
-                                const hasDKIM = dkimRecord != null;
-                                const delta = hasDKIM ? 0 : Number(cfg.dkim.score ?? -20);
-                                score += delta;
-                                if (!hasDKIM) {
-                                    console.log('Invalid/NO DKIM record for the domain:', dkimDomain);
-                                }
-                                checks.dkim = {
-                                    enabled: true,
-                                    passed: hasDKIM,
-                                    scoreDelta: delta,
-                                    info: hasDKIM
-                                        ? `DKIM Schlüssel gefunden (${dkimInfo.selector}._domainkey.${dkimDomain})`
-                                        : `Kein DNS-Eintrag für ${dkimInfo.selector}._domainkey.${dkimDomain}`
-                                };
-                            }
-                        } else {
-                            checks.dkim = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
-                        }
-
-                        // Filtern Sie nach SPF-Einträgen (z.B. "v=spf1 ...")
-                        const spfRecord = data.Answer.find(rec => {
-                            if (typeof rec.data !== 'string') return false;
-                            const recordData = rec.data.replace(/"/g, '').trim();
-                            return recordData.toLowerCase().startsWith('v=spf1');
-                        });
-                        return {
-                            score,
-                            isSpam: score < settings.spamThreshold,
-                            checks
-                        };
-                    }
-
-                    return spfRecord ? spfRecord.data : null;
-                }
-                /**
-                 * Validate the given domain, of its existence, by the SPF record and the DKIM signature of the EMAIL header.
-                 * It will return a score based on the criticality of its checks. A negative score means that it fails some checks.
-                 * @param {string} domain the domain read from the original (sender) address
-                 * @param {string[]} dkimSig the DKIM signature read from the email header "message.headers['dkim-signature']"
-                 * @returns {Promise<number>} the score of the validation.
-                 */
-                async function validateDomain(domain, dkimSig) {
-                    const result = await validateDomainDetailed(domain, dkimSig);
-                    return result.score;
+                case 'CLEAR_DNS_CACHE': {
+                    g_DNS_CACHE.clear();
+                    g_RDAP_CACHE.clear();
+                    return { success: true, cacheSize: 0 };
                 }
 
-                /**
-                 * Reads the DKIM record via cloudflare (DoH service) and returns it, or null if the entry could not be found.
-                 * @param {string} domain the domain to check
-                 * @param {string} selector DKIM selector read from the Email header ([Selektor]._domainkey.[Domäne])
-                 * @returns {Promise<object|null>}
-                 */
-                async function getDKIMRecord(domain, selector) {
-                    if (!domain || !selector) {
-                        return null;
-                    }
-                    /**
-                     * Fetches the SPF record from the given domain by using cloudflare as DoH service
-                     * @param {string} domain the domain to read the SPF record from
-                     * @returns {Promise<string|null>} the SPF result if available, otherwise it will return null
-                     */
-                    async function getSPFRecord(domain) {
-                        const data = await getDNSEntry(domain, 'TXT');
-                        if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
-                            console.warn(`Keine TXT-Einträge für ${domain} gefunden.`);
-                            return null;
-                        }
-
-                        // Der DoH-Endpunkt und die spezifische DNS-Anfrage für den DKIM-Eintrag.
-                        const query = `${selector}._domainkey.${domain}`;
-                        const data = await getDNSEntry(query, 'TXT');
-                        // Filtern Sie nach SPF-Einträgen (z.B. "v=spf1 ...")
-                        const spfRecord = data.Answer.find(rec => {
-                            if (typeof rec.data !== 'string') return false;
-                            const recordData = rec.data.replace(/"/g, '').trim();
-                            return recordData.toLowerCase().startsWith('v=spf1');
-                        });
-
-                        // Suchen nach dem DKIM-TXT-Eintrag, der den öffentlichen Schlüssel enthält.
-                        if (data && Array.isArray(data.Answer) && data.Answer.length > 0) {
-                            const dkimEntry = data.Answer.find(rec => {
-                                if (typeof rec.data !== 'string') return false;
-                                const normalized = rec.data.replace(/"\s*"/g, '').replace(/"/g, '');
-                                return normalized.includes('p=') || normalized.includes('v=DKIM1') || normalized.includes('k=rsa');
-                            });
-                            if (dkimEntry != null) {
-                                return dkimEntry;
-                            }
-                        }
-                        return spfRecord ? spfRecord.data : null;
-                    }
-
-                    console.log(`Kein DKIM-Eintrag gefunden für: ${query}`);
-                    return null;
-                }
-                /**
-                 * Reads the DKIM record via cloudflare (DoH service) and returns it, or null if the entry could not be found.
-                 * @param {string} domain the domain to check
-                 * @param {string} selector DKIM selector read from the Email header ([Selektor]._domainkey.[Domäne])
-                 * @returns {Promise<object|null>}
-                 */
-                async function getDKIMRecord(domain, selector) {
-                    if (!domain || !selector) {
-                        return null;
-                    }
-
-                    /**
-                     * Extracts both the DKIM selector (s=) and signing domain (d=) from the first DKIM-Signature header.
-                     * @param {string[]} dkimHeaders usually the result from message.headers['dkim-signature']
-                     * @returns {{ selector: string|null, domain: string|null } | null}
-                     */
-                    function getDKIMInfo(dkimHeaders) {
-                        if (!Array.isArray(dkimHeaders) || dkimHeaders.length === 0 || !dkimHeaders[0]) {
-                            console.log('Keine DKIM-Header in der Nachricht gefunden.');
-                            return null;
-                        }
-                        // Der DoH-Endpunkt und die spezifische DNS-Anfrage für den DKIM-Eintrag.
-                        const query = `${selector}._domainkey.${domain}`;
-                        const data = await getDNSEntry(query, 'TXT');
-
-                        const dkimHeaderString = dkimHeaders[0];
-                        const parts = dkimHeaderString.split(';');
-                        let selector = null;
-                        let domain = null;
-                        // Suchen nach dem DKIM-TXT-Eintrag, der den öffentlichen Schlüssel enthält.
-                        if (data && Array.isArray(data.Answer) && data.Answer.length > 0) {
-                            const dkimEntry = data.Answer.find(rec => {
-                                if (typeof rec.data !== 'string') return false;
-                                const normalized = rec.data.replace(/"\s*"/g, '').replace(/"/g, '');
-                                return normalized.includes('p=') || normalized.includes('v=DKIM1') || normalized.includes('k=rsa');
-                            });
-                            if (dkimEntry != null) {
-                                return dkimEntry;
-                            }
-                        }
-
-                        for (const part of parts) {
-                            const trimmedPart = part.replace(/\s+/g, '');
-                            if (trimmedPart.startsWith('s=')) {
-                                selector = trimmedPart.substring(2);
-                            } else if (trimmedPart.startsWith('d=')) {
-                                domain = trimmedPart.substring(2).toLowerCase();
-                            }
-                        }
-                        console.log(`Kein DKIM-Eintrag gefunden für: ${query}`);
-                        return null;
-                    }
-
-                    if (!selector) {
-                        console.log('Kein Selektor im ersten DKIM-Header gefunden.', dkimHeaderString);
-                        return null;
-                    }
-                    /**
-                     * Extracts both the DKIM selector (s=) and signing domain (d=) from the first DKIM-Signature header.
-                     * @param {string[]} dkimHeaders usually the result from message.headers['dkim-signature']
-                     * @returns {{ selector: string|null, domain: string|null } | null}
-                     */
-                    function getDKIMInfo(dkimHeaders) {
-                        if (!Array.isArray(dkimHeaders) || dkimHeaders.length === 0 || !dkimHeaders[0]) {
-                            console.log('Keine DKIM-Header in der Nachricht gefunden.');
-                            return null;
-                        }
-
-                        return { selector, domain };
-                    }
-                    const dkimHeaderString = dkimHeaders[0];
-                    const parts = dkimHeaderString.split(';');
-                    let selector = null;
-                    let domain = null;
-
-                    /**
-                     * Read the DKIM selector part from the first DKIM header and return it.
-                     * @param {string[]} dkimHeaders usually the result from the message.headers['dkim-signature'];
-                     * @returns {string|null} the found DKIM selector or null
-                     */
-                    function getDKIMSelector(dkimHeaders) {
-                        const info = getDKIMInfo(dkimHeaders);
-                        return info ? info.selector : null;
-                    }
-                    for (const part of parts) {
-                        const trimmedPart = part.replace(/\s+/g, '');
-                        if (trimmedPart.startsWith('s=')) {
-                            selector = trimmedPart.substring(2);
-                        } else if (trimmedPart.startsWith('d=')) {
-                            domain = trimmedPart.substring(2).toLowerCase();
-                        }
-                    }
-
-                    /**
-                     * Checks if the given domain has a matching A record
-                     * @param {string} domain the domain of which to read the A record from
-                     * @returns {Promise<boolean>}
-                     */
-                    async function doesDomainExist(domain) {
-                        const answer = await getDNSEntry(domain, 'A');
-                        return (answer != null);
-                    }
-                    if (!selector) {
-                        console.log('Kein Selektor im ersten DKIM-Header gefunden.', dkimHeaderString);
-                        return null;
-                    }
-
-                    /**
-                     * Checks if the given domain has a matching A record and DNSSEC-Signature
-                     * @param {string} domain the domain of which to read the A record from
-                     * @returns {Promise<boolean>}
-                     */
-                    async function hasValidDNSSEC(domain) {
-                        const answer = await getDNSEntry(domain, 'A');
-                        return (answer != null && answer.AD === true);
-                    }
-                    return { selector, domain };
+                case 'GET_ALL_FOLDERS': {
+                    const folders = await getAllFoldersList();
+                    return { folders };
                 }
 
-                /**
-                 * Checks if the given domain has a matching MX record
-                 * @param {string} domain the domain of which to read the MX record from
-                 * @returns {Promise<boolean>}
-                 */
-                async function hasDomainMXRecord(domain) {
-                    const answer = await getDNSEntry(domain, 'MX');
-                    return answer != null;
-                }
-                /**
-                 * Read the DKIM selector part from the first DKIM header and return it.
-                 * @param {string[]} dkimHeaders usually the result from the message.headers['dkim-signature'];
-                 * @returns {string|null} the found DKIM selector or null
-                 */
-                function getDKIMSelector(dkimHeaders) {
-                    const info = getDKIMInfo(dkimHeaders);
-                    return info ? info.selector : null;
+                case 'SCAN_ACTIVE_FOLDER': {
+                    if (!messenger.mailTabs) {
+                        return { error: 'mailTabs API nicht verfügbar.' };
+                    }
+                    const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
+                    const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
+                    if (!activeTab || !activeTab.displayedFolder) {
+                        return { error: 'Kein aktiver Ordner in Thunderbird ausgewählt.' };
+                    }
+                    return await scanFolder(activeTab.displayedFolder, 'folder-scan');
                 }
 
-                /**
-                 * Fetches the given DNS type entry of the given domain by using cloudflare as DoH service.
-                 * Returns the answer if it was available, otherwise it will return null (unless returnRawStatus is true).
-                 * @param {string} domain the domain name to check
-                 * @param {string} type the type of record to request (e.g. A, AAAA, MX, TXT)
-                 * @param {boolean} [returnRawStatus=false] if true, returns the parsed JSON even when Answer is empty (to inspect Status like NXDOMAIN)
-                 * @returns {Promise<object|null>} the result data (response.json()) of the response of the fetch request
-                 */
-                async function getDNSEntry(domain, type, returnRawStatus = false) {
+                case 'SCAN_SELECTED_MESSAGES': {
+                    if (!messenger.mailTabs) {
+                        return { error: 'mailTabs API nicht verfügbar.' };
+                    }
+                    const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
+                    const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
+                    const msgList = await messenger.mailTabs.getSelectedMessages();
+                    if (!msgList || !msgList.messages || msgList.messages.length === 0) {
+                        return { error: 'Keine E-Mails in der aktuellen Ansicht ausgewählt.' };
+                    }
+                    return await scanMessageList(msgList, activeTab ? activeTab.displayedFolder : null, 'selected-messages');
+                }
+
+                case 'SCAN_FOLDER_BY_ID': {
+                    if (!request.folderId) {
+                        return { error: 'Keine Ordner-ID angegeben.' };
+                    }
+                    const allFolders = await getAllFoldersList();
+                    const found = allFolders.find(f => f.id === request.folderId) || { id: request.folderId, name: request.folderName || request.folderId };
+                    return await scanFolder(found, 'folder-scan');
+                }
+
+                case 'TEST_DOMAIN': {
+                    const rawInput = (request.input || '').trim();
+                    const domain = rawInput.includes('@') ? await extractDomainFromAuthor(rawInput) : rawInput.toLowerCase();
                     if (!domain) {
-                        return null;
+                        return { error: 'Bitte eine gültige Domain oder E-Mail-Adresse eingeben.' };
                     }
-                    /**
-                     * Checks if the given domain has a matching A record
-                     * @param {string} domain the domain of which to read the A record from
-                     * @returns {Promise<boolean>}
-                     */
-                    async function doesDomainExist(domain) {
-                        const answer = await getDNSEntry(domain, 'A');
-                        return (answer != null);
-                    }
-
-                    const cacheKey = `${domain.toLowerCase()}:${type.toUpperCase()}`;
-                    const now = Date.now();
-                    const cached = g_DNS_CACHE.get(cacheKey);
-                    /**
-                     * Checks if the given domain has a matching A record and DNSSEC-Signature
-                     * @param {string} domain the domain of which to read the A record from
-                     * @returns {Promise<boolean>}
-                     */
-                    async function hasValidDNSSEC(domain) {
-                        const answer = await getDNSEntry(domain, 'A');
-                        return (answer != null && answer.AD === true);
-                    }
-
-                    let data = null;
-                    if (cached && (now - cached.timestamp) < g_DNS_CACHE_TTL_MS) {
-                        data = cached.data;
-                    } else {
-                        const url = `${g_DOH_SERVICE_URL}?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`;
-                        const headers = { 'accept': 'application/dns-json' };
-                        /**
-                         * Checks if the given domain has a matching MX record
-                         * @param {string} domain the domain of which to read the MX record from
-                         * @returns {Promise<boolean>}
-                         */
-                        async function hasDomainMXRecord(domain) {
-                            const answer = await getDNSEntry(domain, 'MX');
-                            return answer != null;
-                        }
-
-                        try {
-                            const response = await fetch(url, { headers });
-                            if (!response.ok) {
-                                console.warn(`DoH HTTP-Fehler (${response.status}) für ${domain} (${type}).`);
-                                return null;
-                            }
-                            data = await response.json();
-                            g_DNS_CACHE.set(cacheKey, { timestamp: now, data });
-                        } catch (error) {
-                            console.error('Fehler bei der DNS-Abfrage:', error);
-                            return null;
-                        }
-                    }
-                    /**
-                     * Fetches the given DNS type entry of the given domain by using cloudflare as DoH service.
-                     * Returns the answer if it was available, otherwise it will return null (unless returnRawStatus is true).
-                     * @param {string} domain the domain name to check
-                     * @param {string} type the type of record to request (e.g. A, AAAA, MX, TXT)
-                     * @param {boolean} [returnRawStatus=false] if true, returns the parsed JSON even when Answer is empty (to inspect Status like NXDOMAIN)
-                     * @returns {Promise<object|null>} the result data (response.json()) of the response of the fetch request
-                     */
-                    async function getDNSEntry(domain, type, returnRawStatus = false) {
-                        if (!domain) {
-                            return null;
-                        }
-
-                        if (returnRawStatus) {
-                            return data;
-                        }
-                        const cacheKey = `${domain.toLowerCase()}:${type.toUpperCase()}`;
-                        const now = Date.now();
-                        const cached = g_DNS_CACHE.get(cacheKey);
-
-                        // Wenn die "Answer"-Sektion leer ist, hat die Domäne keinen entsprechenden Record.
-                        if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
-                            console.warn(`Domäne '${domain}' scheint nicht zu existieren oder hat keinen ${type}-Record.`);
-                            return null;
-                        }
-                        let data = null;
-                        if (cached && (now - cached.timestamp) < g_DNS_CACHE_TTL_MS) {
-                            data = cached.data;
-                        } else {
-                            const url = `${g_DOH_SERVICE_URL}?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`;
-                            const headers = { 'accept': 'application/dns-json' };
-
-                            return data; // Es wurden DNS-Einträge gefunden.
-                        }
-                        try {
-                            const response = await fetch(url, { headers });
-                            if (!response.ok) {
-                                console.warn(`DoH HTTP-Fehler (${response.status}) für ${domain} (${type}).`);
-                                return null;
-                            }
-                            data = await response.json();
-                            g_DNS_CACHE.set(cacheKey, { timestamp: now, data });
-                        } catch (error) {
-                            console.error('Fehler bei der DNS-Abfrage:', error);
-                            return null;
-                        }
-                    }
-
-                    /**
-                     * Performs a fetch operation for the given url with an optional timeout and measures the latency
-                     * @param {string} url the url to fetch
-                     * @param {number} [timeout=5000] optional timeout in ms
-                     * @returns {Promise<{ success: boolean, latency: number }>} the time in milliseconds or -1 if it resulted in an error
-                     */
-                    async function measureLatency(url, timeout = 5000) {
-                        const controller = new AbortController();
-                        const id = setTimeout(() => controller.abort(), timeout);
-                        const startTime = performance.now();
-                        if (returnRawStatus) {
-                            return data;
-                        }
-
-                        try {
-                            const response = await fetch(url, {
-                                method: 'HEAD', // HEAD ist schneller als GET
-                                signal: controller.signal
-                            });
-                            clearTimeout(id);
-                            const endTime = performance.now();
-                            const latency = endTime - startTime;
-                            return { success: response.ok, latency: latency };
-                        } catch (error) {
-                            clearTimeout(id);
-                            if (error.name === 'AbortError') {
-                                console.error('Anfrage wegen Timeout abgebrochen.');
-                            } else {
-                                console.error('Fetch-Anfrage fehlgeschlagen:', error);
-                            }
-                            return { success: false, latency: -1 };
-                        }
-                    }
-                    // Wenn die "Answer"-Sektion leer ist, hat die Domäne keinen entsprechenden Record.
-                    if (!data || data.Status !== 0 || !Array.isArray(data.Answer) || data.Answer.length === 0) {
-                        console.warn(`Domäne '${domain}' scheint nicht zu existieren oder hat keinen ${type}-Record.`);
-                        return null;
-                    }
-
-                    return data; // Es wurden DNS-Einträge gefunden.
+                    const dkimHeaders = request.dkimHeader ? [request.dkimHeader] : null;
+                    const result = await validateDomainDetailed(domain, dkimHeaders);
+                    return { domain, ...result };
                 }
 
-                /**
-                 * Performs a fetch operation for the given url with an optional timeout and measures the latency
-                 * @param {string} url the url to fetch
-                 * @param {number} [timeout=5000] optional timeout in ms
-                 * @returns {Promise<{ success: boolean, latency: number }>} the time in milliseconds or -1 if it resulted in an error
-                 */
-                async function measureLatency(url, timeout = 5000) {
-                    const controller = new AbortController();
-                    const id = setTimeout(() => controller.abort(), timeout);
-                    const startTime = performance.now();
-
-                    try {
-                        const response = await fetch(url, {
-                            method: 'HEAD', // HEAD ist schneller als GET
-                            signal: controller.signal
-                        });
-                        clearTimeout(id);
-                        const endTime = performance.now();
-                        const latency = endTime - startTime;
-                        return { success: response.ok, latency: latency };
-                    } catch (error) {
-                        clearTimeout(id);
-                        if (error.name === 'AbortError') {
-                            console.error('Anfrage wegen Timeout abgebrochen.');
-                        } else {
-                            console.error('Fetch-Anfrage fehlgeschlagen:', error);
-                        }
-                        return { success: false, latency: -1 };
-                    }
-                }
-
-                /**
-                 * Collects all folders across all accounts in a flat list for UI folder selection
-                 */
-                async function getAllFoldersList() {
-                    if (!messenger.accounts || !messenger.accounts.list) {
-                        return [];
-                    }
-                    const accounts = await messenger.accounts.list(true);
-                    const result = [];
-
-                    function walkFolders(folders, accountName, prefix = '') {
-                        if (!Array.isArray(folders)) return;
-                        for (const f of folders) {
-                            const displayPath = prefix ? `${prefix} / ${f.name}` : f.name;
-                            result.push({
-                                id: f.id,
-                                name: f.name,
-                                accountId: f.accountId,
-                                accountName,
-                                displayPath: `${accountName}: ${displayPath}`,
-                                specialUse: f.specialUse || []
-                            });
-                            if (Array.isArray(f.subFolders) && f.subFolders.length > 0) {
-                                walkFolders(f.subFolders, accountName, displayPath);
-                            }
-                        }
-                    }
-
-                    for (const acc of accounts) {
-                        walkFolders(acc.folders, acc.name);
-                    }
-                    return result;
-                }
-
-                /**
-                 * Handles messages from Popup and Options/Diagnostics pages
-                 */
-                if (messenger.runtime && messenger.runtime.onMessage) {
-                    messenger.runtime.onMessage.addListener(async (request) => {
-                        if (!request || !request.action) {
-                            return;
-                        }
-
-                        switch (request.action) {
-                            case 'GET_STATE': {
-                                const settings = await getSettings();
-                                const logData = messenger.storage ? await messenger.storage.local.get('diagnosticLog') : {};
-                                return {
-                                    settings,
-                                    defaultSettings: DEFAULT_SETTINGS,
-                                    diagnosticLog: Array.isArray(logData.diagnosticLog) ? logData.diagnosticLog : [],
-                                    scanState: g_SCAN_STATE,
-                                    cacheSize: g_DNS_CACHE.size
-                                };
-                            }
-
-                            case 'SAVE_SETTINGS': {
-                                const current = await getSettings();
-                                const nextSettings = Object.assign({}, current, request.settings || {});
-                                await messenger.storage.local.set({ settings: nextSettings });
-                                return { success: true, settings: nextSettings };
-                            }
-
-                            case 'RESET_SETTINGS': {
-                                const defaults = structuredClone(DEFAULT_SETTINGS);
-                                await messenger.storage.local.set({ settings: defaults });
-                                return { success: true, settings: defaults };
-                            }
-
-                            case 'CLEAR_LOG': {
-                                await messenger.storage.local.set({ diagnosticLog: [] });
-                                notifyUI({ type: 'LOG_UPDATED', entry: null, scanState: g_SCAN_STATE });
-                                return { success: true };
-                            }
-
-                            case 'CLEAR_DNS_CACHE': {
-                                g_DNS_CACHE.clear();
-                                return { success: true, cacheSize: 0 };
-                            }
-
-                            case 'GET_ALL_FOLDERS': {
-                                const folders = await getAllFoldersList();
-                                return { folders };
-                            }
-
-                            case 'SCAN_ACTIVE_FOLDER': {
-                                if (!messenger.mailTabs) {
-                                    throw new Error('mailTabs API nicht verfügbar.');
-                                }
-                                const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
-                                const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
-                                if (!activeTab || !activeTab.displayedFolder) {
-                                    throw new Error('Kein aktiver Ordner in Thunderbird ausgewählt.');
-                                }
-                                return await scanFolder(activeTab.displayedFolder, 'folder-scan');
-                            }
-
-                            case 'SCAN_SELECTED_MESSAGES': {
-                                if (!messenger.mailTabs) {
-                                    throw new Error('mailTabs API nicht verfügbar.');
-                                }
-                                const msgList = await messenger.mailTabs.getSelectedMessages();
-                                if (!msgList || !msgList.messages || msgList.messages.length === 0) {
-                                    throw new Error('Keine E-Mails in der aktuellen Ansicht ausgewählt.');
-                                }
-                                return await scanMessageList(msgList, null, 'selected-messages');
-                            }
-
-                            case 'SCAN_FOLDER_BY_ID': {
-                                if (!request.folderId) {
-                                    throw new Error('Keine Ordner-ID angegeben.');
-                                }
-                                const allFolders = await getAllFoldersList();
-                                const found = allFolders.find(f => f.id === request.folderId) || { id: request.folderId, name: request.folderName || request.folderId };
-                                return await scanFolder(found, 'folder-scan');
-                            }
-
-                            case 'TEST_DOMAIN': {
-                                const rawInput = (request.input || '').trim();
-                                const domain = rawInput.includes('@') ? await extractDomainFromAuthor(rawInput) : rawInput.toLowerCase();
-                                if (!domain) {
-                                    throw new Error('Bitte eine gültige Domain oder E-Mail-Adresse eingeben.');
-                                }
-                                const dkimHeaders = request.dkimHeader ? [request.dkimHeader] : null;
-                                const result = await validateDomainDetailed(domain, dkimHeaders);
-                                return { domain, ...result };
-                            }
-
-                            default:
-                                return null;
-                        }
-                    });
-                }
+                default:
+                    return null;
+            }
+        } catch (err) {
+            console.error(`Error handling runtime action ${request.action}:`, err);
+            return { error: err && err.message ? err.message : String(err) };
+        }
+    });
+}

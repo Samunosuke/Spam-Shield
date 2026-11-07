@@ -14,7 +14,7 @@
       </div>
       <div class="btn-row">
         <span id="saveStatus" class="status-toast"></span>
-        <button id="clearCacheBtn" title="Leert den 10-Minuten-In-Memory-Cache für DNS-Abfragen">🔄 DNS-Cache leeren (<span id="cacheCount">0</span>)</button>
+        <button id="clearCacheBtn" title="Leert den In-Memory-Cache für DNS- und RDAP-Abfragen">🔄 DNS/RDAP-Cache leeren (<span id="cacheCount">0</span>)</button>
       </div>
     </header>
 
@@ -65,7 +65,7 @@
           <input type="number" id="maxLogEntries" step="10" min="10" max="1000" value="100">
         </div>
 
-        <h3 style="font-size:13px; margin:14px 0 6px;">Einzelne DNS-/Authentifizierungs-Prüfungen</h3>
+        <h3 style="font-size:13px; margin:14px 0 6px;">Einzelne DNS-, Reputations- &amp; Authentifizierungs-Prüfungen</h3>
         <table class="settings-table">
           <thead>
             <tr>
@@ -125,6 +125,50 @@
               <td><input type="number" id="chk_dkim_score" step="5" max="0" min="-500"></td>
               <td class="muted" style="font-size:11px;">–</td>
             </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_dmarc_enabled"></td>
+              <td>
+                <strong>6. DMARC-Richtlinie (_dmarc)</strong>
+                <div class="muted" style="font-size:11px;">Prüft auf gültige DMARC-Policy (<code>p=quarantine</code> / <code>p=reject</code>). Spammer nutzen oft gar kein DMARC oder nur <code>p=none</code>.</div>
+              </td>
+              <td><input type="number" id="chk_dmarc_score" step="5" max="0" min="-500"></td>
+              <td>
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" title="Wenn aktiv, führt auch p=none (keine Durchsetzung) zum Punktabzug">
+                  <input type="checkbox" id="chk_dmarc_penalizeNone"> <code>p=none</code> abstrafen
+                </label>
+              </td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_domainAge_enabled"></td>
+              <td>
+                <strong>7. Domain-Alter / Neu registrierte Domains (RDAP)</strong>
+                <div class="muted" style="font-size:11px;">Prüft über RDAP (WHOIS-Nachfolger), ob die Domain erst kürzlich für Spam-Kampagnen registriert wurde.</div>
+              </td>
+              <td><input type="number" id="chk_domainAge_score" step="5" max="0" min="-500"></td>
+              <td>
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" title="Domains, die jünger als diese Anzahl an Tagen sind, erhalten den Punktabzug">
+                  Min. Tage: <input type="number" id="chk_domainAge_minDays" min="1" max="3650" step="5" style="width:65px;">
+                </label>
+              </td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_dnsbl_enabled"></td>
+              <td>
+                <strong>8. DNS-Blacklist (Domain &amp; Server-IP)</strong>
+                <div class="muted" style="font-size:11px;">Prüft Domain und Einlieferungs-/A-Record-IP gegen öffentliche DNS-Blacklists (Nordspam, SpamCop, 0spam, Spamhaus).</div>
+              </td>
+              <td><input type="number" id="chk_dnsbl_score" step="5" max="0" min="-500"></td>
+              <td class="muted" style="font-size:11px;">–</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" id="chk_spfIpMatch_enabled"></td>
+              <td>
+                <strong>9. SPF-Absender-IP-Abgleich (Received-Header)</strong>
+                <div class="muted" style="font-size:11px;">Prüft anhand von <code>Authentication-Results</code> / <code>Received</code>-Headern, ob die sendende Server-IP wirklich durch den SPF-Record autorisiert ist.</div>
+              </td>
+              <td><input type="number" id="chk_spfIpMatch_score" step="5" max="0" min="-500"></td>
+              <td class="muted" style="font-size:11px;">–</td>
+            </tr>
           </tbody>
         </table>
 
@@ -166,7 +210,7 @@
           </p>
           <div style="display:flex; flex-direction:column; gap:8px;">
             <div class="btn-row">
-              <input type="text" id="testDomainInput" placeholder="z.B. absender@beispiel.de oder google.com" style="flex:1;">
+              <input type="text" id="testDomainInput" placeholder="z.B. no-reply@snismirpel.com oder google.com" style="flex:1;">
               <button id="runDomainTestBtn" class="btn-primary">🔍 Domain prüfen</button>
             </div>
             <input type="text" id="testDkimInput" placeholder="Optional: DKIM-Signature Header (z.B. v=1; a=rsa-sha256; d=beispiel.de; s=default; ...)">
@@ -218,4 +262,3 @@
   <script src="options.js"></script>
 </body>
 </html>
-

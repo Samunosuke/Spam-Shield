@@ -1,3 +1,54 @@
+// Default configuration (kept in sync with background.js so options page can also operate directly on storage.local)
+const DEFAULT_SETTINGS = {
+    spamThreshold: -50,
+    dryRun: false,
+    monitorAllFolders: true,
+    maxLogEntries: 100,
+    checks: {
+        domainExists: { enabled: true, score: -100, stopOnFail: true },
+        dnssec: { enabled: true, score: -10 },
+        mx: { enabled: true, score: -20 },
+        spf: { enabled: true, score: -50 },
+        dkim: { enabled: true, score: -20 },
+        dmarc: { enabled: true, score: -20, penalizeNone: true },
+        domainAge: { enabled: true, score: -40, minAgeDays: 90 },
+        dnsbl: { enabled: true, score: -80 },
+        spfIpMatch: { enabled: true, score: -40 }
+    }
+};
+
+function cloneDefaults() {
+    return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+}
+
+function mergeWithDefaults(saved) {
+    const base = cloneDefaults();
+    if (!saved || typeof saved !== 'object') {
+        return base;
+    }
+    const mergedChecks = {};
+    for (const [key, defVal] of Object.entries(base.checks)) {
+        mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
+    }
+    return Object.assign({}, base, saved, { checks: mergedChecks });
+}
+
+/**
+ * Safely sends a runtime message to background.js without throwing an uncaught exception
+ * if the background event page is asleep or the options tab was kept open across an addon reload.
+ */
+async function sendToBackground(payload) {
+    if (!messenger.runtime || typeof messenger.runtime.sendMessage !== 'function') {
+        return null;
+    }
+    try {
+        return await messenger.runtime.sendMessage(payload);
+    } catch (err) {
+        console.warn(`sendMessage(${payload && payload.action}) fallback:`, err);
+        return null;
+    }
+}
+
 // DOM elements – Settings
 const spamThresholdInput = document.getElementById('spamThreshold');
 const dryRunInput = document.getElementById('dryRun');
@@ -29,6 +80,24 @@ const chkFields = {
     dkim: {
         enabled: document.getElementById('chk_dkim_enabled'),
         score: document.getElementById('chk_dkim_score')
+    },
+    dmarc: {
+        enabled: document.getElementById('chk_dmarc_enabled'),
+        score: document.getElementById('chk_dmarc_score'),
+        penalizeNone: document.getElementById('chk_dmarc_penalizeNone')
+    },
+    domainAge: {
+        enabled: document.getElementById('chk_domainAge_enabled'),
+        score: document.getElementById('chk_domainAge_score'),
+        minAgeDays: document.getElementById('chk_domainAge_minDays')
+    },
+    dnsbl: {
+        enabled: document.getElementById('chk_dnsbl_enabled'),
+        score: document.getElementById('chk_dnsbl_score')
+    },
+    spfIpMatch: {
+        enabled: document.getElementById('chk_spfIpMatch_enabled'),
+        score: document.getElementById('chk_spfIpMatch_score')
     }
 };
 
@@ -77,13 +146,13 @@ function flashSaveStatus(msg) {
 }
 
 function populateSettingsForm(settings) {
-    if (!settings) return;
-    spamThresholdInput.value = settings.spamThreshold ?? -50;
-    dryRunInput.checked = Boolean(settings.dryRun);
-    monitorAllFoldersInput.checked = settings.monitorAllFolders !== false;
-    maxLogEntriesInput.value = settings.maxLogEntries ?? 100;
+    const merged = mergeWithDefaults(settings);
+    spamThresholdInput.value = merged.spamThreshold ?? -50;
+    dryRunInput.checked = Boolean(merged.dryRun);
+    monitorAllFoldersInput.checked = merged.monitorAllFolders !== false;
+    maxLogEntriesInput.value = merged.maxLogEntries ?? 100;
 
-    if (settings.dryRun) {
+    if (merged.dryRun) {
         currentModeBadge.className = 'badge badge-warn';
         currentModeBadge.textContent = 'Evaluierungsmodus (Dry-Run)';
     } else {
@@ -91,13 +160,20 @@ function populateSettingsForm(settings) {
         currentModeBadge.textContent = 'Aktiv (Verschieben nach Junk)';
     }
 
-    const checks = settings.checks || {};
+    const checks = merged.checks || {};
     for (const [key, fields] of Object.entries(chkFields)) {
+        if (!fields.enabled || !fields.score) continue;
         const cfg = checks[key] || {};
         fields.enabled.checked = cfg.enabled !== false;
         fields.score.value = cfg.score ?? 0;
         if (fields.stopOnFail) {
             fields.stopOnFail.checked = cfg.stopOnFail !== false;
+        }
+        if (fields.penalizeNone) {
+            fields.penalizeNone.checked = cfg.penalizeNone !== false;
+        }
+        if (fields.minAgeDays) {
+            fields.minAgeDays.value = cfg.minAgeDays ?? 90;
         }
     }
 }
@@ -105,12 +181,19 @@ function populateSettingsForm(settings) {
 function collectSettingsFromForm() {
     const checks = {};
     for (const [key, fields] of Object.entries(chkFields)) {
+        if (!fields.enabled || !fields.score) continue;
         checks[key] = {
             enabled: fields.enabled.checked,
             score: Number(fields.score.value) || 0
         };
         if (fields.stopOnFail) {
             checks[key].stopOnFail = fields.stopOnFail.checked;
+        }
+        if (fields.penalizeNone) {
+            checks[key].penalizeNone = fields.penalizeNone.checked;
+        }
+        if (fields.minAgeDays) {
+            checks[key].minAgeDays = Math.max(1, Number(fields.minAgeDays.value) || 90);
         }
     }
 
@@ -132,12 +215,16 @@ function renderCheckPills(checks) {
         ['dnssec', 'DNSSEC'],
         ['mx', 'MX'],
         ['spf', 'SPF'],
-        ['dkim', 'DKIM']
+        ['dkim', 'DKIM'],
+        ['dmarc', 'DMARC'],
+        ['domainAge', 'Alter'],
+        ['dnsbl', 'DNSBL'],
+        ['spfIpMatch', 'SPF-IP']
     ];
     return `<div class="check-pills">${labels.map(([key, label]) => {
         const c = checks[key];
         if (!c) {
-            return `<span class="check-pill off" title="${label}: nicht ausgeführt (vorzeitig abgebrochen)">${label}: –</span>`;
+            return `<span class="check-pill off" title="${label}: nicht ausgeführt">${label}: –</span>`;
         }
         if (!c.enabled) {
             return `<span class="check-pill off" title="${label}: deaktiviert">${label}: aus</span>`;
@@ -214,7 +301,7 @@ function renderDiagnosticTable() {
             </td>
             <td>
               <div><strong>${escapeHtml(entry.domain)}</strong></div>
-              <div class="muted" style="font-size:11px; max-width:220px;" class="truncate" title="${escapeHtml(entry.author)}">${escapeHtml(entry.author)}</div>
+              <div class="muted truncate" style="font-size:11px; max-width:220px;" title="${escapeHtml(entry.author)}">${escapeHtml(entry.author)}</div>
             </td>
             <td style="max-width:260px;">
               <div title="${escapeHtml(entry.subject)}">${escapeHtml(entry.subject)}</div>
@@ -253,7 +340,7 @@ function updateScanBanner(scanState) {
 
 async function loadFoldersDropdown() {
     try {
-        const res = await messenger.runtime.sendMessage({ action: 'GET_ALL_FOLDERS' });
+        const res = await sendToBackground({ action: 'GET_ALL_FOLDERS' });
         const folders = (res && res.folders) || [];
         if (folders.length === 0) {
             folderSelect.innerHTML = '<option value="">Keine Ordner gefunden</option>';
@@ -273,14 +360,26 @@ async function loadFoldersDropdown() {
 
 async function loadState(includeSettingsForm = false) {
     try {
-        const state = await messenger.runtime.sendMessage({ action: 'GET_STATE' });
-        if (!state) return;
-        if (includeSettingsForm) {
-            populateSettingsForm(state.settings);
+        // First read directly from storage.local so it always works even if background page is asleep
+        let storedSettings = null;
+        let storedLog = null;
+        if (messenger.storage && messenger.storage.local) {
+            const localData = await messenger.storage.local.get(['settings', 'diagnosticLog']);
+            storedSettings = localData.settings;
+            storedLog = localData.diagnosticLog;
         }
-        cacheCountEl.textContent = state.cacheSize ?? 0;
-        fullDiagnosticLog = state.diagnosticLog || [];
-        updateScanBanner(state.scanState);
+
+        const state = await sendToBackground({ action: 'GET_STATE' });
+        const effectiveSettings = mergeWithDefaults((state && state.settings) || storedSettings);
+
+        if (includeSettingsForm) {
+            populateSettingsForm(effectiveSettings);
+        }
+        cacheCountEl.textContent = (state && state.cacheSize) ?? 0;
+        fullDiagnosticLog = (state && Array.isArray(state.diagnosticLog))
+            ? state.diagnosticLog
+            : (Array.isArray(storedLog) ? storedLog : []);
+        updateScanBanner(state ? state.scanState : null);
         renderDiagnosticTable();
     } catch (err) {
         console.error('Failed to load state:', err);
@@ -289,29 +388,42 @@ async function loadState(includeSettingsForm = false) {
 
 // Event listeners
 saveSettingsBtn.addEventListener('click', async () => {
-    const newSettings = collectSettingsFromForm();
-    const res = await messenger.runtime.sendMessage({
-        action: 'SAVE_SETTINGS',
-        settings: newSettings
-    });
-    if (res && res.success) {
-        populateSettingsForm(res.settings);
+    try {
+        const newSettings = collectSettingsFromForm();
+        if (messenger.storage && messenger.storage.local) {
+            await messenger.storage.local.set({ settings: newSettings });
+        }
+        await sendToBackground({
+            action: 'SAVE_SETTINGS',
+            settings: newSettings
+        });
+        populateSettingsForm(newSettings);
         flashSaveStatus('✓ Einstellungen gespeichert');
+    } catch (err) {
+        console.error('Save settings error:', err);
+        flashSaveStatus(`Fehler: ${err.message || err}`);
     }
 });
 
 resetSettingsBtn.addEventListener('click', async () => {
-    const res = await messenger.runtime.sendMessage({ action: 'RESET_SETTINGS' });
-    if (res && res.success) {
-        populateSettingsForm(res.settings);
+    try {
+        const defaults = cloneDefaults();
+        if (messenger.storage && messenger.storage.local) {
+            await messenger.storage.local.set({ settings: defaults });
+        }
+        await sendToBackground({ action: 'RESET_SETTINGS' });
+        populateSettingsForm(defaults);
         flashSaveStatus('↺ Standardwerte wiederhergestellt');
+    } catch (err) {
+        console.error('Reset settings error:', err);
+        flashSaveStatus(`Fehler: ${err.message || err}`);
     }
 });
 
 clearCacheBtn.addEventListener('click', async () => {
-    await messenger.runtime.sendMessage({ action: 'CLEAR_DNS_CACHE' });
+    await sendToBackground({ action: 'CLEAR_DNS_CACHE' });
     cacheCountEl.textContent = '0';
-    flashSaveStatus('✓ DNS-Cache geleert');
+    flashSaveStatus('✓ DNS/RDAP-Cache geleert');
 });
 
 scanSelectedFolderBtn.addEventListener('click', async () => {
@@ -319,39 +431,39 @@ scanSelectedFolderBtn.addEventListener('click', async () => {
     if (!folderId) return;
     const folderName = folderSelect.options[folderSelect.selectedIndex]?.text || folderId;
     folderScanResult.textContent = `Starte Prüfung für "${folderName}"…`;
-    try {
-        const res = await messenger.runtime.sendMessage({
-            action: 'SCAN_FOLDER_BY_ID',
-            folderId,
-            folderName
-        });
-        folderScanResult.textContent = `✓ Ordnerprüfung abgeschlossen: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
-        await loadState(false);
-    } catch (err) {
-        folderScanResult.textContent = `Fehler: ${err.message || err}`;
+    const res = await sendToBackground({
+        action: 'SCAN_FOLDER_BY_ID',
+        folderId,
+        folderName
+    });
+    if (!res || res.error) {
+        folderScanResult.textContent = `Fehler: ${(res && res.error) || 'Hintergrundskript nicht erreichbar – bitte diesen Tab einmal neu laden (F5).'}`;
+        return;
     }
+    folderScanResult.textContent = `✓ Ordnerprüfung abgeschlossen: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
+    await loadState(false);
 });
 
 scanActiveFolderBtn.addEventListener('click', async () => {
     folderScanResult.textContent = 'Starte Prüfung des aktiven Ordners…';
-    try {
-        const res = await messenger.runtime.sendMessage({ action: 'SCAN_ACTIVE_FOLDER' });
-        folderScanResult.textContent = `✓ Aktiver Ordner geprüft: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
-        await loadState(false);
-    } catch (err) {
-        folderScanResult.textContent = `Fehler: ${err.message || err}`;
+    const res = await sendToBackground({ action: 'SCAN_ACTIVE_FOLDER' });
+    if (!res || res.error) {
+        folderScanResult.textContent = `Fehler: ${(res && res.error) || 'Hintergrundskript nicht erreichbar – bitte diesen Tab einmal neu laden (F5).'}`;
+        return;
     }
+    folderScanResult.textContent = `✓ Aktiver Ordner geprüft: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
+    await loadState(false);
 });
 
 scanSelectedMsgsBtn.addEventListener('click', async () => {
     folderScanResult.textContent = 'Prüfe markierte E-Mails…';
-    try {
-        const res = await messenger.runtime.sendMessage({ action: 'SCAN_SELECTED_MESSAGES' });
-        folderScanResult.textContent = `✓ Auswahl geprüft: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
-        await loadState(false);
-    } catch (err) {
-        folderScanResult.textContent = `Fehler: ${err.message || err}`;
+    const res = await sendToBackground({ action: 'SCAN_SELECTED_MESSAGES' });
+    if (!res || res.error) {
+        folderScanResult.textContent = `Fehler: ${(res && res.error) || 'Hintergrundskript nicht erreichbar – bitte diesen Tab einmal neu laden (F5).'}`;
+        return;
     }
+    folderScanResult.textContent = `✓ Auswahl geprüft: ${res.processed} E-Mails geprüft, ${res.spamCount} als Spam eingestuft.`;
+    await loadState(false);
 });
 
 runDomainTestBtn.addEventListener('click', async () => {
@@ -362,52 +474,65 @@ runDomainTestBtn.addEventListener('click', async () => {
         return;
     }
 
-    domainTestOutput.innerHTML = '<span class="muted">Frage DNS / SPF / DKIM über Cloudflare DoH ab…</span>';
-    try {
-        const res = await messenger.runtime.sendMessage({
-            action: 'TEST_DOMAIN',
-            input,
-            dkimHeader: dkimHeader || null
-        });
-        const badgeCls = res.isSpam ? 'badge-spam' : 'badge-ok';
-        const statusTxt = res.isSpam ? 'SPAM (unter Schwellenwert)' : 'OK (Vertrauenswürdig)';
-        domainTestOutput.innerHTML = `
-          <div style="padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <strong>Domain: ${escapeHtml(res.domain)}</strong>
-              <span class="badge ${badgeCls}">Score: ${res.score} · ${statusTxt}</span>
-            </div>
-            ${renderCheckPills(res.checks)}
-          </div>
-        `;
-        await loadState(false);
-    } catch (err) {
-        domainTestOutput.innerHTML = `<span style="color:var(--danger);">Fehler: ${escapeHtml(err.message || err)}</span>`;
+    domainTestOutput.innerHTML = '<span class="muted">Frage DNS, SPF, DKIM, DMARC, RDAP (Domain-Alter) &amp; DNSBL ab…</span>';
+    const res = await sendToBackground({
+        action: 'TEST_DOMAIN',
+        input,
+        dkimHeader: dkimHeader || null
+    });
+    if (!res || res.error) {
+        domainTestOutput.innerHTML = `<span style="color:var(--danger);">Fehler: ${escapeHtml((res && res.error) || 'Hintergrundskript nach Add-on-Update noch nicht verbunden – bitte diesen Tab einmal mit F5 neu laden.')}</span>`;
+        return;
     }
+    const badgeCls = res.isSpam ? 'badge-spam' : 'badge-ok';
+    const statusTxt = res.isSpam ? 'SPAM (unter Schwellenwert)' : 'OK (Vertrauenswürdig)';
+    domainTestOutput.innerHTML = `
+      <div style="padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong>Domain: ${escapeHtml(res.domain)}</strong>
+          <span class="badge ${badgeCls}">Score: ${res.score} · ${statusTxt}</span>
+        </div>
+        ${renderCheckPills(res.checks)}
+      </div>
+    `;
+    await loadState(false);
 });
 
 logFilterStatus.addEventListener('change', renderDiagnosticTable);
 logSearchInput.addEventListener('input', renderDiagnosticTable);
 
 clearLogBtn.addEventListener('click', async () => {
-    await messenger.runtime.sendMessage({ action: 'CLEAR_LOG' });
+    if (messenger.storage && messenger.storage.local) {
+        await messenger.storage.local.set({ diagnosticLog: [] });
+    }
+    await sendToBackground({ action: 'CLEAR_LOG' });
     fullDiagnosticLog = [];
     renderDiagnosticTable();
 });
 
-messenger.runtime.onMessage.addListener((msg) => {
-    if (!msg) return;
-    if (msg.type === 'SCAN_PROGRESS' || msg.type === 'SCAN_COMPLETE') {
-        updateScanBanner(msg.scanState);
-        if (msg.type === 'SCAN_COMPLETE') {
+if (messenger.runtime && messenger.runtime.onMessage) {
+    messenger.runtime.onMessage.addListener((msg) => {
+        if (!msg) return;
+        if (msg.type === 'SCAN_PROGRESS' || msg.type === 'SCAN_COMPLETE') {
+            updateScanBanner(msg.scanState);
+            if (msg.type === 'SCAN_COMPLETE') {
+                loadState(false);
+            }
+        } else if (msg.type === 'LOG_UPDATED') {
             loadState(false);
         }
-    } else if (msg.type === 'LOG_UPDATED') {
-        loadState(false);
-    }
-});
+    });
+}
+
+if (messenger.storage && messenger.storage.onChanged) {
+    messenger.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.diagnosticLog) {
+            fullDiagnosticLog = Array.isArray(changes.diagnosticLog.newValue) ? changes.diagnosticLog.newValue : [];
+            renderDiagnosticTable();
+        }
+    });
+}
 
 // Initial load
 loadState(true);
 loadFoldersDropdown();
-
