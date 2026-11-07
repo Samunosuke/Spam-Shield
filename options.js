@@ -16,7 +16,7 @@ const DEFAULT_SETTINGS = {
         domainAge: { enabled: true, score: -40, minAgeDays: 90 },
         dnsbl: { enabled: true, score: -80 },
         spfIpMatch: { enabled: true, score: -40 },
-        spamKitFingerprint: { enabled: true, score: -80, fetchWebsite: true }
+        spamKitFingerprint: { enabled: true, score: -80 }
     }
 };
 
@@ -106,8 +106,7 @@ const chkFields = {
     },
     spamKitFingerprint: {
         enabled: document.getElementById('chk_spamKitFingerprint_enabled'),
-        score: document.getElementById('chk_spamKitFingerprint_score'),
-        fetchWebsite: document.getElementById('chk_spamKitFingerprint_fetchWebsite')
+        score: document.getElementById('chk_spamKitFingerprint_score')
     }
 };
 
@@ -295,9 +294,6 @@ function populateSettingsForm(settings) {
         if (fields.minAgeDays) {
             fields.minAgeDays.value = cfg.minAgeDays ?? 90;
         }
-        if (fields.fetchWebsite) {
-            fields.fetchWebsite.checked = cfg.fetchWebsite !== false;
-        }
     }
 
     renderRuleLists(merged);
@@ -319,9 +315,6 @@ function collectSettingsFromForm() {
         }
         if (fields.minAgeDays) {
             checks[key].minAgeDays = Math.max(1, Number(fields.minAgeDays.value) || 90);
-        }
-        if (fields.fetchWebsite) {
-            checks[key].fetchWebsite = fields.fetchWebsite.checked;
         }
     }
 

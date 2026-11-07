@@ -22,9 +22,6 @@ const g_DNS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const g_RDAP_CACHE = new Map();
 const g_RDAP_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 
-const g_WEB_CACHE = new Map();
-const g_WEB_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
-
 /**
  * Folder types that should be ignored when monitoring all folders automatically
  */
@@ -82,8 +79,7 @@ const DEFAULT_SETTINGS = {
         },
         spamKitFingerprint: {
             enabled: true,
-            score: -80,
-            fetchWebsite: true
+            score: -80
         }
     }
 };
@@ -1083,10 +1079,9 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
         checks.spfIpMatch = { enabled: false, passed: null, scoreDelta: 0, info: 'Deaktiviert' };
     }
 
-    // 10. Spam-Kit DNS & Fake-Website Fingerprint check
+    // 10. Spam-Kit DNS Generator Fingerprint check (purely DNS-based, zero direct HTTP calls to unknown servers)
     if (cfg.spamKitFingerprint && cfg.spamKitFingerprint.enabled) {
-        const fetchWebsite = cfg.spamKitFingerprint.fetchWebsite !== false;
-        const kitEval = await evaluateSpamKitAndWebsiteFingerprint(domain, mxRecordData, spfRecord, dmarcRes, fetchWebsite);
+        const kitEval = evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord, dmarcRes);
         const passed = !kitEval.detected;
         const delta = passed ? 0 : Number(cfg.spamKitFingerprint.score ?? -80);
         score += delta;
@@ -1426,92 +1421,18 @@ function evaluateSenderSPFFromHeadersAndDNS(headers, spfRecord, aRecordIps = [])
 }
 
 /**
- * Fetches the domain's homepage over HTTPS (with HTTP fallback) and checks for known
- * AI-generated / RSS-scraper alibi website templates used by spam botnets.
- * Results are cached in memory for 60 minutes.
- * @param {string} domain
- * @returns {Promise<{ matched: boolean, reasons: string[], reachable: boolean }>}
- */
-async function fetchWebsiteSpamSignature(domain) {
-    if (!domain) {
-        return { matched: false, reasons: [], reachable: false };
-    }
-
-    const cleanDom = domain.toLowerCase().trim();
-    const now = Date.now();
-    const cached = g_WEB_CACHE.get(cleanDom);
-    if (cached && (now - cached.timestamp) < g_WEB_CACHE_TTL_MS) {
-        return cached.result;
-    }
-
-    const protocols = ['https', 'http'];
-    for (const proto of protocols) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500);
-        try {
-            const response = await fetch(`${proto}://${cleanDom}/`, {
-                signal: controller.signal,
-                redirect: 'follow'
-            });
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                continue;
-            }
-
-            const html = await response.text();
-            const reasons = [];
-
-            // 1. Known AYT CSS template used across identical fake spam domains
-            if (/href=["'][^"']*assets\/ayt\/css\/main\.css["']/i.test(html)) {
-                reasons.push('Fake-Site Template (assets/ayt/css/main.css)');
-            }
-
-            // 2. Automated NYT RSS scraper alibi content
-            const hasNytScraper = /<h1>\s*NYT\s*&gt;|<h1>\s*NYT\s*>/i.test(html) && /nytimes\.com\//i.test(html);
-            if (hasNytScraper) {
-                reasons.push('NYT-RSS-Scraper Alibi-Inhalt');
-            }
-
-            // 3. Boilerplate navigation & footer ("Powered by: <domain>" + disclaimer/privacy/contact)
-            const hasPoweredBySelf = new RegExp(`Powered\\s+by:\\s*<a[^>]*>\\s*${cleanDom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*<\\/a>`, 'i').test(html);
-            const hasBoilerplateNav = /href=["']\/disclaimer\.html["']/i.test(html) &&
-                /href=["']\/privacy\.html["']/i.test(html) &&
-                /href=["']\/contact\.html["']/i.test(html);
-
-            if (hasPoweredBySelf && hasBoilerplateNav) {
-                reasons.push('Generisches Alibi-Footer/Nav-Gerüst');
-            }
-
-            const result = {
-                matched: reasons.length > 0,
-                reasons,
-                reachable: true
-            };
-            g_WEB_CACHE.set(cleanDom, { timestamp: now, result });
-            return result;
-        } catch (_err) {
-            clearTimeout(timeoutId);
-        }
-    }
-
-    const fallbackResult = { matched: false, reasons: [], reachable: false };
-    g_WEB_CACHE.set(cleanDom, { timestamp: now, result: fallbackResult });
-    return fallbackResult;
-}
-
-/**
- * Evaluates whether a domain exhibits the DNS provisioning fingerprint and/or website template
- * of automated bulk-spam domain generators (e.g. esourl.org, gottlieb.relusnelar.org, logicvanta.info,
+ * Evaluates whether a domain exhibits the DNS provisioning fingerprint of automated bulk-spam
+ * domain generators (e.g. esourl.org, gottlieb.relusnelar.org, logicvanta.info,
  * denesik.heatrica.shop, initives.org, snismirpel.com).
+ * Operates purely on already-queried DoH DNS records (0 extra network calls, never triggers CORS/NetworkError).
  * @param {string} domain
+ * @param {string[]} aRecordIps
  * @param {object|null} mxRecordData
  * @param {string|null} spfRecord
  * @param {{ record: string, policy: string|null }|null} dmarcRes
- * @param {boolean} fetchWebsite
- * @returns {Promise<{ detected: boolean, info: string, indicators: string[] }>}
+ * @returns {{ detected: boolean, info: string, indicators: string[] }}
  */
-async function evaluateSpamKitAndWebsiteFingerprint(domain, mxRecordData, spfRecord, dmarcRes, fetchWebsite = true) {
+function evaluateSpamKitFingerprint(domain, aRecordIps, mxRecordData, spfRecord, dmarcRes) {
     const cleanDom = (domain || '').toLowerCase().trim();
     const rootDom = getRegistrableDomain(cleanDom) || cleanDom;
     const dnsIndicators = [];
@@ -1538,7 +1459,16 @@ async function evaluateSpamKitAndWebsiteFingerprint(domain, mxRecordData, spfRec
         dnsIndicators.push('Spam-Kit MX/SPF-Muster (10 <domain> + v=spf1 a mx ip4 -all)');
     }
 
-    // Indicator 3: Snowshoe multi-IP same /24 subnet in SPF (e.g. 3 IPs from same /24 subnet)
+    // Indicator 3: Redundant A-record IP explicitly duplicated inside "v=spf1 a mx ip4:<A-IP> -all"
+    if (isRawIpSpfTemplate && Array.isArray(aRecordIps) && aRecordIps.length > 0) {
+        const spfIps = (cleanSpf.match(/\bip4:(\d{1,3}(?:\.\d{1,3}){3})\b/g) || []).map(s => s.replace(/^ip4:/, ''));
+        const duplicateAIp = aRecordIps.find(ip => spfIps.includes(ip));
+        if (duplicateAIp) {
+            dnsIndicators.push(`Redundante A-Record-IP im Baukasten-SPF (${duplicateAIp})`);
+        }
+    }
+
+    // Indicator 4: Snowshoe multi-IP same /24 subnet in SPF (e.g. 3 IPs from same /24 subnet)
     if (cleanSpf) {
         const ipMatches = cleanSpf.match(/\bip4:(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}\b/g) || [];
         const prefixes = ipMatches.map(m => m.replace(/^ip4:/, '').split('.').slice(0, 3).join('.'));
@@ -1552,8 +1482,8 @@ async function evaluateSpamKitAndWebsiteFingerprint(domain, mxRecordData, spfRec
         }
     }
 
-    // Indicator 4: Disposable random subdomain with its own self-MX (e.g. gottlieb.relusnelar.org, denesik.heatrica.shop)
-    const commonSubdomains = new Set(['mail', 'www', 'smtp', 'mx', 'newsletter', 'news', 'info', 'service', 'support', 'shop', 'billing', 'noreply', 'no-reply', ' bounce', 'em', 'email', 'mta']);
+    // Indicator 5: Disposable random subdomain with its own self-MX (e.g. gottlieb.relusnelar.org, denesik.heatrica.shop)
+    const commonSubdomains = new Set(['mail', 'www', 'smtp', 'mx', 'newsletter', 'news', 'info', 'service', 'support', 'shop', 'billing', 'noreply', 'no-reply', 'bounce', 'em', 'email', 'mta']);
     if (cleanDom !== rootDom) {
         const subPrefix = cleanDom.slice(0, cleanDom.length - rootDom.length - 1);
         if (subPrefix && !commonSubdomains.has(subPrefix) && hasSelfMx10) {
@@ -1561,30 +1491,23 @@ async function evaluateSpamKitAndWebsiteFingerprint(domain, mxRecordData, spfRec
         }
     }
 
-    // Website template inspection (if enabled)
-    let webRes = { matched: false, reasons: [], reachable: false };
-    if (fetchWebsite) {
-        webRes = await fetchWebsiteSpamSignature(cleanDom);
-    }
-
-    const allIndicators = [...webRes.reasons, ...dnsIndicators];
-    // Flag as spam-kit if the fake website template is explicitly matched OR at least 2 DNS generator indicators match
-    const detected = webRes.matched || dnsIndicators.length >= 2;
+    // Flag as spam-kit when at least 2 generator indicators match simultaneously
+    const detected = dnsIndicators.length >= 2;
 
     if (detected) {
         return {
             detected: true,
-            indicators: allIndicators,
-            info: `Spam-Baukasten erkannt: ${allIndicators.join(' + ')}`
+            indicators: dnsIndicators,
+            info: `Spam-Baukasten erkannt: ${dnsIndicators.join(' + ')}`
         };
     }
 
     return {
         detected: false,
-        indicators: allIndicators,
-        info: allIndicators.length > 0
-            ? `Unauffällig (1 Einzelmerkmal: ${allIndicators[0]})`
-            : 'Kein bekannter Spam-Baukasten / kein Fake-Site-Template'
+        indicators: dnsIndicators,
+        info: dnsIndicators.length > 0
+            ? `Unauffällig (1 Einzelmerkmal: ${dnsIndicators[0]})`
+            : 'Kein bekannter Spam-Baukasten-Fingerabdruck'
     };
 }
 
@@ -1849,7 +1772,7 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                         defaultSettings: cloneDefaults(),
                         diagnosticLog: Array.isArray(logData.diagnosticLog) ? logData.diagnosticLog : [],
                         scanState: Object.assign({}, g_SCAN_STATE),
-                        cacheSize: g_DNS_CACHE.size + g_RDAP_CACHE.size + g_WEB_CACHE.size
+                        cacheSize: g_DNS_CACHE.size + g_RDAP_CACHE.size
                     };
                 }
 
@@ -1875,7 +1798,6 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                 case 'CLEAR_DNS_CACHE': {
                     g_DNS_CACHE.clear();
                     g_RDAP_CACHE.clear();
-                    g_WEB_CACHE.clear();
                     return { success: true, cacheSize: 0 };
                 }
 

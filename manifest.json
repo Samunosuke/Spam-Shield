@@ -19,9 +19,7 @@
   ],
   "host_permissions": [
     "https://cloudflare-dns.com/*",
-    "https://data.iana.org/*",
-    "https://*/*",
-    "http://*/*"
+    "https://data.iana.org/*"
   ],
   "background": {
     "scripts": [
