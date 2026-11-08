@@ -88,7 +88,16 @@ const DEFAULT_SETTINGS = {
         },
         dnsbl: {
             enabled: true,
-            score: -80
+            score: -80,
+            minHits: 1,
+            providers: {
+                nordspam: true,
+                spamhaus: true,
+                spamcop: true,
+                nixspam: true,
+                zerospam: true,
+                dronebl: false
+            }
         },
         spfIpMatch: {
             enabled: true,
@@ -326,7 +335,12 @@ async function getSettings() {
         const saved = data && data.settings ? data.settings : {};
         const mergedChecks = {};
         for (const [key, defVal] of Object.entries(DEFAULT_SETTINGS.checks)) {
-            mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
+            const savedCheck = saved.checks && saved.checks[key] ? saved.checks[key] : {};
+            const mergedCheck = Object.assign({}, defVal, savedCheck);
+            if (defVal.providers) {
+                mergedCheck.providers = Object.assign({}, defVal.providers, savedCheck.providers || {});
+            }
+            mergedChecks[key] = mergedCheck;
         }
         const whitelist = Array.isArray(saved.whitelist) ? saved.whitelist : [];
         const blacklist = Array.isArray(saved.blacklist) ? saved.blacklist : [];
@@ -1145,18 +1159,34 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
     // 8. DNSBL (Domain & IP Blacklist check via DoH)
     if (cfg.dnsbl && cfg.dnsbl.enabled) {
         const ipToCheck = senderIp || (aRecordIps.length > 0 ? aRecordIps[0] : null);
-        const blRes = await checkDNSBL(domain, ipToCheck);
-        const passed = !blRes.listed;
-        const delta = passed ? 0 : Number(cfg.dnsbl.score ?? -80);
-        score += delta;
-        checks.dnsbl = {
-            enabled: true,
-            passed,
-            scoreDelta: delta,
-            info: passed
-                ? (ipToCheck ? L('info_dnsbl_clean_ip', { ip: ipToCheck }) : L('info_dnsbl_clean_dom'))
-                : L('info_dnsbl_listed', { lists: blRes.lists.join('; ') })
-        };
+        const providers = (cfg.dnsbl && cfg.dnsbl.providers) || (DEFAULT_SETTINGS.checks.dnsbl && DEFAULT_SETTINGS.checks.dnsbl.providers);
+        const activeProvidersCount = Object.values(providers || {}).filter(Boolean).length;
+        if (activeProvidersCount === 0) {
+            checks.dnsbl = { enabled: true, passed: true, scoreDelta: 0, info: L('status_disabled') };
+        } else {
+            const minHits = Math.max(1, Number(cfg.dnsbl.minHits ?? 1));
+            const blRes = await checkDNSBL(domain, ipToCheck, providers);
+            const hitCount = blRes.lists.length;
+            const passed = hitCount < minHits;
+            const delta = passed ? 0 : Number(cfg.dnsbl.score ?? -80);
+            score += delta;
+
+            let infoText;
+            if (hitCount === 0) {
+                infoText = ipToCheck ? L('info_dnsbl_clean_ip', { ip: ipToCheck }) : L('info_dnsbl_clean_dom');
+            } else if (passed) {
+                infoText = L('info_dnsbl_below_min', { count: hitCount, min: minHits, lists: blRes.lists.join('; ') });
+            } else {
+                infoText = L('info_dnsbl_listed', { lists: blRes.lists.join('; ') });
+            }
+
+            checks.dnsbl = {
+                enabled: true,
+                passed,
+                scoreDelta: delta,
+                info: infoText
+            };
+        }
     } else {
         checks.dnsbl = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
     }
@@ -1394,6 +1424,12 @@ function describeDNSBLReturnCode(label, code) {
         if (code === '127.0.1.6') return L('dnsbl_desc_botnet');
         if (code.startsWith('127.0.1.')) return L('dnsbl_desc_spam');
     }
+    if (label.includes('DroneBL')) {
+        return L('dnsbl_desc_botnet');
+    }
+    if (label.includes('NiX Spam')) {
+        return L('dnsbl_desc_spam');
+    }
     if (code === '127.0.0.2') {
         return L('dnsbl_desc_spam');
     }
@@ -1406,22 +1442,50 @@ function describeDNSBLReturnCode(label, code) {
  * Formats positive hits with evaluated target (Domain/IP), status return code, and reason.
  * @param {string} domain
  * @param {string|null} ipv4
+ * @param {object|null} providers Selected provider toggle map
  * @returns {Promise<{ listed: boolean, lists: string[] }>}
  */
-async function checkDNSBL(domain, ipv4 = null) {
+async function checkDNSBL(domain, ipv4 = null, providers = null) {
+    const prov = Object.assign({
+        nordspam: true,
+        spamhaus: true,
+        spamcop: true,
+        nixspam: true,
+        zerospam: true,
+        dronebl: false
+    }, providers || {});
+
     const rootDomain = getRegistrableDomain(domain) || domain;
-    const queries = [
-        { label: 'Nordspam DBL', host: `${rootDomain}.dbl.nordspam.com`, target: rootDomain, type: 'domain' },
-        { label: 'Spamhaus DBL', host: `${rootDomain}.dbl.spamhaus.org`, target: rootDomain, type: 'domain' }
-    ];
+    const queries = [];
+
+    if (prov.nordspam) {
+        queries.push({ label: 'Nordspam DBL', host: `${rootDomain}.dbl.nordspam.com`, target: rootDomain, type: 'domain' });
+    }
+    if (prov.spamhaus) {
+        queries.push({ label: 'Spamhaus DBL', host: `${rootDomain}.dbl.spamhaus.org`, target: rootDomain, type: 'domain' });
+    }
 
     if (ipv4 && /^\d{1,3}(\.\d{1,3}){3}$/.test(ipv4)) {
         const reversedIp = ipv4.split('.').reverse().join('.');
-        queries.push(
-            { label: 'Nordspam IP-BL', host: `${reversedIp}.bl.nordspam.com`, target: ipv4, type: 'ip' },
-            { label: 'SpamCop BL', host: `${reversedIp}.bl.spamcop.net`, target: ipv4, type: 'ip' },
-            { label: '0spam BL', host: `${reversedIp}.bl.0spam.org`, target: ipv4, type: 'ip' }
-        );
+        if (prov.nordspam) {
+            queries.push({ label: 'Nordspam IP-BL', host: `${reversedIp}.bl.nordspam.com`, target: ipv4, type: 'ip' });
+        }
+        if (prov.spamcop) {
+            queries.push({ label: 'SpamCop BL', host: `${reversedIp}.bl.spamcop.net`, target: ipv4, type: 'ip' });
+        }
+        if (prov.nixspam) {
+            queries.push({ label: 'NiX Spam', host: `${reversedIp}.ix.dnsbl.manitu.net`, target: ipv4, type: 'ip' });
+        }
+        if (prov.zerospam) {
+            queries.push({ label: '0spam BL', host: `${reversedIp}.bl.0spam.org`, target: ipv4, type: 'ip' });
+        }
+        if (prov.dronebl) {
+            queries.push({ label: 'DroneBL', host: `${reversedIp}.dnsbl.dronebl.org`, target: ipv4, type: 'ip' });
+        }
+    }
+
+    if (queries.length === 0) {
+        return { listed: false, lists: [] };
     }
 
     const results = await Promise.all(
