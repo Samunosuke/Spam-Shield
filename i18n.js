@@ -647,7 +647,8 @@ function applyI18nToDOM(langPref = 'auto') {
     document.querySelectorAll('[data-i18n-html]').forEach(el => {
         const key = el.getAttribute('data-i18n-html');
         if (key) {
-            el.innerHTML = t(key, {}, lang);
+            const parsedDoc = new DOMParser().parseFromString(t(key, {}, lang), 'text/html');
+            el.replaceChildren(...parsedDoc.body.childNodes);
         }
     });
 
