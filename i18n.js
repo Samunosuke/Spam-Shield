@@ -50,6 +50,7 @@ const I18N_MESSAGES = {
         title_remove_bl: 'Von Blacklist entfernen',
 
         // Context Menus (Thunderbird folder_pane & message_list)
+        action_tooltip: 'Suke Email Validation – Live-Diagnose & Ordnerprüfung',
         menu_validate_folder: 'Ordner auf Spam-Domains prüfen (Suke)',
         menu_validate_messages: 'Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)',
         menu_whitelist_email: 'Absender-E-Mail zur Whitelist hinzufügen (Suke)',
@@ -335,6 +336,7 @@ const I18N_MESSAGES = {
         title_remove_bl: 'Remove from Blacklist',
 
         // Context Menus (Thunderbird folder_pane & message_list)
+        action_tooltip: 'Suke Email Validation – Live diagnostics & folder scanner',
         menu_validate_folder: 'Scan folder for spam domains (Suke)',
         menu_validate_messages: 'Scan selected email(s) for spam domain (Suke)',
         menu_whitelist_email: 'Add sender email to Whitelist (Suke)',
