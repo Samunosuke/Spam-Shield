@@ -2,10 +2,10 @@
   "manifest_version": 3,
   "name": "Suke.EmailValidationAddon",
   "version": "1.6",
-  "description": "Validiert Absender-Domänen per Whitelist/Blacklist, DNS, SPF, DKIM, DMARC, Domain-Alter (RDAP), DNSBL und Spam-Baukasten-Erkennung (DE/EN).",
+  "description": "Validates sender domains via whitelist/blacklist, DNS, SPF, DKIM, DMARC, domain age (RDAP), DNSBL and spam toolkit detection (DE/EN).",
   "browser_specific_settings": {
     "gecko": {
-      "id": "email-validation@suke.local",
+      "id": "suke-email-validation@addon.mozilla.org",
       "strict_min_version": "128.0"
     }
   },
