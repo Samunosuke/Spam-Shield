@@ -1155,7 +1155,7 @@ async function validateDomainDetailed(domain, dkimSig, customSettings = null, he
             scoreDelta: delta,
             info: passed
                 ? (ipToCheck ? L('info_dnsbl_clean_ip', { ip: ipToCheck }) : L('info_dnsbl_clean_dom'))
-                : L('info_dnsbl_listed', { lists: blRes.lists.join(', ') })
+                : L('info_dnsbl_listed', { lists: blRes.lists.join('; ') })
         };
     } else {
         checks.dnsbl = { enabled: false, passed: null, scoreDelta: 0, info: L('status_disabled') };
@@ -1374,8 +1374,36 @@ async function getDomainAgeRDAP(domain) {
 }
 
 /**
+ * Resolves a human-readable description for DNSBL status return codes (RFC 5782).
+ * @param {string} label DNSBL provider label
+ * @param {string} code Return IPv4 string (e.g. 127.0.0.1)
+ * @returns {string} Human-readable reason
+ */
+function describeDNSBLReturnCode(label, code) {
+    if (label.includes('0spam')) {
+        if (code === '127.0.0.1') return L('dnsbl_desc_spamtrap');
+        if (code === '127.0.0.2') return L('dnsbl_desc_spam');
+        if (code === '127.0.0.3') return L('dnsbl_desc_nonrfc');
+        if (code === '127.0.0.4') return L('dnsbl_desc_repeat');
+        if (code === '127.0.0.5') return L('dnsbl_desc_relay');
+        if (code === '127.0.0.6') return L('dnsbl_desc_phish');
+    }
+    if (label.includes('Spamhaus')) {
+        if (code === '127.0.1.4') return L('dnsbl_desc_phish');
+        if (code === '127.0.1.5') return L('dnsbl_desc_malware');
+        if (code === '127.0.1.6') return L('dnsbl_desc_botnet');
+        if (code.startsWith('127.0.1.')) return L('dnsbl_desc_spam');
+    }
+    if (code === '127.0.0.2') {
+        return L('dnsbl_desc_spam');
+    }
+    return L('dnsbl_desc_listed');
+}
+
+/**
  * Checks domain and optional IPv4 address against DNS-based blacklists via DoH.
  * Ignores public-resolver policy/error return codes in 127.255.255.0/24.
+ * Formats positive hits with evaluated target (Domain/IP), status return code, and reason.
  * @param {string} domain
  * @param {string|null} ipv4
  * @returns {Promise<{ listed: boolean, lists: string[] }>}
@@ -1383,16 +1411,16 @@ async function getDomainAgeRDAP(domain) {
 async function checkDNSBL(domain, ipv4 = null) {
     const rootDomain = getRegistrableDomain(domain) || domain;
     const queries = [
-        { label: 'Nordspam DBL', host: `${rootDomain}.dbl.nordspam.com` },
-        { label: 'Spamhaus DBL', host: `${rootDomain}.dbl.spamhaus.org` }
+        { label: 'Nordspam DBL', host: `${rootDomain}.dbl.nordspam.com`, target: rootDomain, type: 'domain' },
+        { label: 'Spamhaus DBL', host: `${rootDomain}.dbl.spamhaus.org`, target: rootDomain, type: 'domain' }
     ];
 
     if (ipv4 && /^\d{1,3}(\.\d{1,3}){3}$/.test(ipv4)) {
         const reversedIp = ipv4.split('.').reverse().join('.');
         queries.push(
-            { label: 'Nordspam IP-BL', host: `${reversedIp}.bl.nordspam.com` },
-            { label: 'SpamCop BL', host: `${reversedIp}.bl.spamcop.net` },
-            { label: '0spam BL', host: `${reversedIp}.bl.0spam.org` }
+            { label: 'Nordspam IP-BL', host: `${reversedIp}.bl.nordspam.com`, target: ipv4, type: 'ip' },
+            { label: 'SpamCop BL', host: `${reversedIp}.bl.spamcop.net`, target: ipv4, type: 'ip' },
+            { label: '0spam BL', host: `${reversedIp}.bl.0spam.org`, target: ipv4, type: 'ip' }
         );
     }
 
@@ -1409,7 +1437,12 @@ async function checkDNSBL(domain, ipv4 = null) {
                 a.data.startsWith('127.0.') &&
                 !a.data.startsWith('127.255.')
             );
-            return validHit ? `${q.label} (${validHit.data})` : null;
+            if (!validHit) {
+                return null;
+            }
+            const desc = describeDNSBLReturnCode(q.label, validHit.data);
+            const targetType = q.type === 'ip' ? 'IP' : 'Domain';
+            return `${q.label} [${targetType}: ${q.target}, Code: ${validHit.data} – ${desc}]`;
         })
     );
 
