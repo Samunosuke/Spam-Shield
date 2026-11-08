@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Suke.EmailValidationAddon",
+  "name": "Spam Shield",
   "version": "1.6",
-  "description": "Validates sender domains via whitelist/blacklist, DNS, SPF, DKIM, DMARC, domain age (RDAP), DNSBL and spam toolkit detection (DE/EN).",
+  "description": "Validates sender domains via whitelist/blacklist, DNS, SPF, DKIM, DMARC, domain age (RDAP), DNSBL and spam-kit detection (EN/DE).",
   "browser_specific_settings": {
     "gecko": {
-      "id": "suke-email-validation@addon.mozilla.org",
+      "id": "spam-shield@addon.mozilla.org",
       "strict_min_version": "128.0"
     }
   },
@@ -40,7 +40,7 @@
       "32": "icons/icon-32.png"
     },
     "default_label": "",
-    "default_title": "Suke Email Validation – Live-Diagnose & Ordnerprüfung",
+    "default_title": "Spam Shield – Live-Diagnose & Ordnerprüfung",
     "default_popup": "popup.html"
   },
   "options_ui": {

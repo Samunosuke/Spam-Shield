@@ -1,4 +1,4 @@
-# EmailValidationAddon for THUNDERBIRD
+# Spam Shield for THUNDERBIRD
 
 **Target:** Thunderbird 128 ESR to 158.0.1+ (64-Bit, Manifest V3)  
 **License:** [MIT License](LICENSE) · **Privacy:** [Privacy Policy](PRIVACY.md) · **Deutsche Version:** [README.de.md](README.de.md)
@@ -46,9 +46,9 @@ Even though the spammer configured valid `A`, `MX`, `SPF`, and `DKIM` records:
 ## Features & User Interface
 
 1. **Native Thunderbird Context Menus**
-   * **Right-click on any folder** in the folder pane -> *"Scan folder for spam domains (Suke)"*
+   * **Right-click on any folder** in the folder pane -> *"Scan folder for spam domains (Spam Shield)"*
    * **Right-click on selected email(s)** in the message list ->
-     * *"Scan selected email(s) for spam domain (Suke)"*
+     * *"Scan selected email(s) for spam domain (Spam Shield)"*
      * *"Add sender email / domain (`*.domain`) to Whitelist"*
      * *"Add sender email / domain (`*.domain`) to Blacklist & mark as Spam"*
 2. **Toolbar Popup ([popup.html](popup.html))**
@@ -67,9 +67,9 @@ Even though the spammer configured valid `A`, `MX`, `SPF`, and `DKIM` records:
 
 ## Building & Packaging
 
-To generate the installation package (`Suke.EmailValidationAddon.xpi`):
+To generate the installation package (`spam.shield.xpi`):
 ```bash
 ./pack.sh
 ```
 
-Install into Thunderbird via **Add-ons Manager (`Ctrl + Shift + A`) -> Gear Icon -> "Install Add-on From File…" -> select `Suke.EmailValidationAddon.xpi`**.
+Install into Thunderbird via **Add-ons Manager (`Ctrl + Shift + A`) -> Gear Icon -> "Install Add-on From File…" -> select `spam.shield.xpi`**.

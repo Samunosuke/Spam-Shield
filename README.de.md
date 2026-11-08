@@ -1,4 +1,4 @@
-# EmailValidationAddon für THUNDERBIRD
+# Spam Shield für THUNDERBIRD
 
 **Zielplattform:** Thunderbird 128 ESR bis 158.0.1+ (64-Bit, Manifest V3)  
 **Lizenz:** [MIT License](LICENSE) · **Datenschutz:** [Datenschutzerklärung](PRIVACY.md) · **English Version:** [README.md](README.md)
@@ -44,9 +44,9 @@ Obwohl der Spammer für `snismirpel.com` gültige `A`-, `MX`-, `SPF`- und `DKIM`
 ## Features & Benutzeroberfläche
 
 1. **Kontextmenü-Integration in Thunderbird**
-   * **Rechtsklick auf einen Ordner** in der Ordnerliste -> *„Ordner auf Spam-Domains prüfen (Suke)“*
+   * **Rechtsklick auf einen Ordner** in der Ordnerliste -> *„Ordner auf Spam-Domains prüfen (Spam Shield)“*
    * **Rechtsklick auf markierte E-Mail(s)** in der Nachrichtenliste ->
-     * *„Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)“*
+     * *„Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Spam Shield)“*
      * *„Absender-E-Mail / Absender-Domain (`*.domain`) zur Whitelist hinzufügen“*
      * *„Absender-E-Mail / Absender-Domain (`*.domain`) zur Blacklist hinzufügen & als Spam behandeln“*
 2. **Toolbar-Popup ([popup.html](popup.html))**
@@ -65,10 +65,10 @@ Obwohl der Spammer für `snismirpel.com` gültige `A`-, `MX`-, `SPF`- und `DKIM`
 
 ## Build & Installation
 
-Zum Erstellen des Add-on-Pakets (`Suke.EmailValidationAddon.xpi`):
+Zum Erstellen des Add-on-Pakets (`spam.shield.xpi`):
 ```bash
 ./pack.sh
 ```
 
-Installation in Thunderbird über **Add-ons-Verwaltung (`Strg + Umschalt + A`) -> Zahnrad-Symbol -> „Add-on aus Datei installieren…“ -> `Suke.EmailValidationAddon.xpi`**.
+Installation in Thunderbird über **Add-ons-Verwaltung (`Strg + Umschalt + A`) -> Zahnrad-Symbol -> „Add-on aus Datei installieren…“ -> `spam.shield.xpi`**.
 
