@@ -1,5 +1,5 @@
 /**
- * Internationalization (i18n) dictionary and helper utilities for Suke.EmailValidationAddon.
+ * Internationalization (i18n) dictionary and helper utilities for Spam Shield.
  * Supports German ('de') and English ('en'), with automatic browser/Thunderbird locale detection ('auto').
  */
 
@@ -50,16 +50,16 @@ const I18N_MESSAGES = {
         title_remove_bl: 'Von Blacklist entfernen',
 
         // Context Menus (Thunderbird folder_pane & message_list)
-        action_tooltip: 'Suke Email Validation – Live-Diagnose & Ordnerprüfung',
-        menu_validate_folder: 'Ordner auf Spam-Domains prüfen (Suke)',
-        menu_validate_messages: 'Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Suke)',
-        menu_whitelist_email: 'Absender-E-Mail zur Whitelist hinzufügen (Suke)',
-        menu_whitelist_domain: 'Absender-Domain (*.domain) zur Whitelist hinzufügen (Suke)',
-        menu_blacklist_email: 'Absender-E-Mail zur Blacklist hinzufügen & als Spam behandeln (Suke)',
-        menu_blacklist_domain: 'Absender-Domain (*.domain) zur Blacklist hinzufügen & als Spam behandeln (Suke)',
+        action_tooltip: 'Spam Shield – Live-Diagnose & Ordnerprüfung',
+        menu_validate_folder: 'Ordner auf Spam-Domains prüfen (Spam Shield)',
+        menu_validate_messages: 'Ausgewählte E-Mail(s) auf Spam-Domain prüfen (Spam Shield)',
+        menu_whitelist_email: 'Absender-E-Mail zur Whitelist hinzufügen (Spam Shield)',
+        menu_whitelist_domain: 'Absender-Domain (*.domain) zur Whitelist hinzufügen (Spam Shield)',
+        menu_blacklist_email: 'Absender-E-Mail zur Blacklist hinzufügen & als Spam behandeln (Spam Shield)',
+        menu_blacklist_domain: 'Absender-Domain (*.domain) zur Blacklist hinzufügen & als Spam behandeln (Spam Shield)',
 
         // Popup UI
-        popup_title: 'Suke Email Validation',
+        popup_title: 'Spam Shield',
         popup_loading: 'Lade Status…',
         popup_open_options: '⚙️ Einstellungen & Diagnose',
         popup_open_options_title: 'Konfiguration & ausführliche Live-Diagnose öffnen',
@@ -86,8 +86,8 @@ const I18N_MESSAGES = {
         conn_error_short: 'Verbindungsfehler',
 
         // Options Page UI
-        opt_page_title: 'Suke Email Validation – Konfiguration & Live-Diagnose',
-        opt_header_title: '🛡️ Suke.EmailValidationAddon – Konfiguration & Live-Diagnose',
+        opt_page_title: 'Spam Shield – Konfiguration & Live-Diagnose',
+        opt_header_title: '🛡️ Spam Shield – Konfiguration & Live-Diagnose',
         opt_header_subtitle: 'Konfiguriere Prüfregeln, Whitelist/Blacklist & Score-Gewichtungen, starte manuelle Ordnerprüfungen und überwache die letzten Bewertungen in Echtzeit.',
         opt_clear_cache_btn: '🔄 DNS/RDAP-Cache leeren',
         opt_clear_cache_title: 'Leert den In-Memory-Cache für DNS- und RDAP-Abfragen',
@@ -336,16 +336,16 @@ const I18N_MESSAGES = {
         title_remove_bl: 'Remove from Blacklist',
 
         // Context Menus (Thunderbird folder_pane & message_list)
-        action_tooltip: 'Suke Email Validation – Live diagnostics & folder scanner',
-        menu_validate_folder: 'Scan folder for spam domains (Suke)',
-        menu_validate_messages: 'Scan selected email(s) for spam domain (Suke)',
-        menu_whitelist_email: 'Add sender email to Whitelist (Suke)',
-        menu_whitelist_domain: 'Add sender domain (*.domain) to Whitelist (Suke)',
-        menu_blacklist_email: 'Add sender email to Blacklist & mark as Spam (Suke)',
-        menu_blacklist_domain: 'Add sender domain (*.domain) to Blacklist & mark as Spam (Suke)',
+        action_tooltip: 'Spam Shield – Live diagnostics & folder scanner',
+        menu_validate_folder: 'Scan folder for spam domains (Spam Shield)',
+        menu_validate_messages: 'Scan selected email(s) for spam domain (Spam Shield)',
+        menu_whitelist_email: 'Add sender email to Whitelist (Spam Shield)',
+        menu_whitelist_domain: 'Add sender domain (*.domain) to Whitelist (Spam Shield)',
+        menu_blacklist_email: 'Add sender email to Blacklist & mark as Spam (Spam Shield)',
+        menu_blacklist_domain: 'Add sender domain (*.domain) to Blacklist & mark as Spam (Spam Shield)',
 
         // Popup UI
-        popup_title: 'Suke Email Validation',
+        popup_title: 'Spam Shield',
         popup_loading: 'Loading status…',
         popup_open_options: '⚙️ Settings & Diagnostics',
         popup_open_options_title: 'Open configuration & detailed live diagnostics',
@@ -372,8 +372,8 @@ const I18N_MESSAGES = {
         conn_error_short: 'Connection error',
 
         // Options Page UI
-        opt_page_title: 'Suke Email Validation – Configuration & Live Diagnostics',
-        opt_header_title: '🛡️ Suke.EmailValidationAddon – Configuration & Live Diagnostics',
+        opt_page_title: 'Spam Shield – Configuration & Live Diagnostics',
+        opt_header_title: '🛡️ Spam Shield – Configuration & Live Diagnostics',
         opt_header_subtitle: 'Configure validation rules, Whitelist/Blacklist & score weights, run manual folder scans, and monitor recent evaluations in real time.',
         opt_clear_cache_btn: '🔄 Clear DNS/RDAP Cache',
         opt_clear_cache_title: 'Clears the in-memory cache for DNS and RDAP lookups',

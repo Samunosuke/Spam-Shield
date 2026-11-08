@@ -28,6 +28,22 @@ const g_RDAP_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 const g_IGNORED_FOLDER_TYPES = new Set(['junk', 'trash', 'sent', 'drafts', 'templates', 'outbox', 'archives']);
 
 /**
+ * Checks whether a folder represents a Junk, Spam, or Trash folder
+ * @param {object|null} folder MailFolder object
+ * @returns {boolean}
+ */
+function isJunkOrTrashFolder(folder) {
+    if (!folder) return false;
+    if (Array.isArray(folder.specialUse)) {
+        if (folder.specialUse.includes('junk') || folder.specialUse.includes('trash')) {
+            return true;
+        }
+    }
+    const name = (folder.name || '').toLowerCase();
+    return name === 'junk' || name === 'spam' || name === 'spamverdacht' || name === 'trash' || name === 'papierkorb';
+}
+
+/**
  * Default configuration for checks, scores, and behavior
  */
 const DEFAULT_SETTINGS = {
@@ -468,9 +484,20 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
         }
 
         // Use getHeaders() instead of getFull() to avoid parsing the full MIME body
-        const headers = messenger.messages.getHeaders
-            ? await messenger.messages.getHeaders(message.id)
-            : (await messenger.messages.getFull(message.id)).headers;
+        // Protected by a timeout promise so slow/unresponsive IMAP connections never freeze evaluation
+        let headers = null;
+        try {
+            const headersPromise = messenger.messages.getHeaders
+                ? messenger.messages.getHeaders(message.id)
+                : messenger.messages.getFull(message.id).then(m => m.headers);
+            headers = await Promise.race([
+                headersPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('getHeaders timeout (5s)')), 5000))
+            ]);
+        } catch (headerErr) {
+            console.warn(`Could not retrieve headers for message ${message.id}:`, headerErr);
+            headers = null;
+        }
         const dkimSig = headers ? headers['dkim-signature'] : null;
 
         // Perform detailed domain validation (passing full headers and senderEmail for Whitelist/Blacklist & SPF-IP)
@@ -600,12 +627,24 @@ async function scanMessageList(msgList, folder = null, source = 'message-scan') 
 
     try {
         for (const message of allMessages) {
-            const res = await evaluateAndProcessMessage(message, effectiveFolder || message.folder, settings, source);
-            g_SCAN_STATE.processed += 1;
-            if (res && res.isSpam) {
-                g_SCAN_STATE.spamCount += 1;
+            try {
+                // Per-message safety timeout: max 15 seconds per email so one bad query never blocks the scan
+                const res = await Promise.race([
+                    evaluateAndProcessMessage(message, effectiveFolder || message.folder, settings, source),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Evaluation timeout (15s)')), 15000))
+                ]);
+                if (res && res.isSpam) {
+                    g_SCAN_STATE.spamCount += 1;
+                }
+            } catch (msgErr) {
+                console.error(`Error or timeout processing message ${message.id}:`, msgErr);
+            } finally {
+                g_SCAN_STATE.processed += 1;
+                notifyUI({ type: 'SCAN_PROGRESS', scanState: g_SCAN_STATE });
             }
-            notifyUI({ type: 'SCAN_PROGRESS', scanState: g_SCAN_STATE });
+
+            // Yield 50ms between messages so the event loop stays responsive and DoH/RDAP servers are not hammered
+            await new Promise(r => setTimeout(r, 50));
         }
     } finally {
         g_SCAN_STATE.running = false;
@@ -632,7 +671,13 @@ async function markAndMoveToSpam(message, sourceFolder) {
         console.warn(`Could not update junk flag on message ${message.id}:`, err);
     }
 
-    // 2. Find the Junk folder for this account and move the message
+    // 2. If message is already located in a Junk, Spam, or Trash folder, do not attempt to move it
+    if (isJunkOrTrashFolder(sourceFolder) || isJunkOrTrashFolder(message.folder)) {
+        console.log(`Message ${message.id} is already in a Junk/Spam folder. Skipping move.`);
+        return;
+    }
+
+    // 3. Find the Junk folder for this account and move the message
     try {
         const accountId = (sourceFolder && sourceFolder.accountId) || (message.folder && message.folder.accountId);
         if (!accountId) {
@@ -1218,8 +1263,11 @@ async function getRdapTldMap() {
     }
 
     g_RDAP_BOOTSTRAP_PROMISE = (async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
         try {
-            const response = await fetch(g_IANA_RDAP_BOOTSTRAP_URL);
+            const response = await fetch(g_IANA_RDAP_BOOTSTRAP_URL, { signal: controller.signal });
+            clearTimeout(timeoutId);
             if (!response.ok) {
                 return new Map();
             }
@@ -1713,9 +1761,12 @@ async function getDNSEntry(domain, type, returnRawStatus = false) {
     } else {
         const url = `${g_DOH_SERVICE_URL}?name=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`;
         const headers = { 'accept': 'application/dns-json' };
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
 
         try {
-            const response = await fetch(url, { headers });
+            const response = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
             if (!response.ok) {
                 console.warn(`DoH HTTP error (${response.status}) for ${domain} (${type}).`);
                 return null;
@@ -1723,6 +1774,7 @@ async function getDNSEntry(domain, type, returnRawStatus = false) {
             data = await response.json();
             g_DNS_CACHE.set(cacheKey, { timestamp: now, data });
         } catch (error) {
+            clearTimeout(timeoutId);
             console.error('DNS query failed:', error);
             return null;
         }

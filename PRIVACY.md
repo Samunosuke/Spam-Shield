@@ -1,6 +1,6 @@
 # Privacy Policy / Datenschutzerklärung
 
-**Suke.EmailValidationAddon for Thunderbird**  
+**Spam Shield for Thunderbird**  
 *Last updated: November 2026*
 
 ---
@@ -8,7 +8,7 @@
 ## English
 
 ### 1. General Principles
-**Suke.EmailValidationAddon** is committed to protecting your privacy. The add-on is designed to operate locally within your Thunderbird client. It does not track you, does not include any analytics or advertising frameworks, and never sells or collects personal data.
+**Spam Shield** is committed to protecting your privacy. The add-on is designed to operate locally within your Thunderbird client. It does not track you, does not include any analytics or advertising frameworks, and never sells or collects personal data.
 
 ### 2. Data Processed Locally
 * **Email Sender & Headers:** To evaluate incoming emails, the add-on extracts the sender domain and relevant authentication headers (`DKIM-Signature`, `Received`, `Authentication-Results`).
@@ -29,7 +29,7 @@ No personal data is collected or shared with the author or any third party. The 
 ## Deutsch
 
 ### 1. Grundsätzliches
-**Suke.EmailValidationAddon** schützt Ihre Privatsphäre. Die Erweiterung arbeitet primär lokal in Ihrem Thunderbird-Mailprogramm. Es werden keine Telemetrie- oder Analysedaten erhoben, keine Werbung ausgespielt und keinerlei personenbezogene Daten gesammelt oder verkauft.
+**Spam Shield** schützt Ihre Privatsphäre. Die Erweiterung arbeitet primär lokal in Ihrem Thunderbird-Mailprogramm. Es werden keine Telemetrie- oder Analysedaten erhoben, keine Werbung ausgespielt und keinerlei personenbezogene Daten gesammelt oder verkauft.
 
 ### 2. Lokal verarbeitete Daten
 * **Absender & E-Mail-Header:** Zur Bewertung eingehender E-Mails liest das Add-on die Domain des Absenders sowie relevante Authentifizierungs-Header (`DKIM-Signature`, `Received`, `Authentication-Results`) aus.

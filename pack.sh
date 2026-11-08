@@ -4,7 +4,7 @@
 ADDON_DIR="."
 
 # Name of the output file (e.g. my-addon.xpi)
-OUTPUT_FILE="Suke.EmailValidationAddon.xpi"
+OUTPUT_FILE="spam.shield.xpi"
 
 # Remove the output file if it already exists
 if [ -f "$OUTPUT_FILE" ]; then
@@ -13,6 +13,6 @@ if [ -f "$OUTPUT_FILE" ]; then
 fi
 
 # Compress the add-on code into a ZIP (XPI) archive
-zip -r "$OUTPUT_FILE" "$ADDON_DIR" -x "*.zip" "*.xpi" "*.sh" ".git/*" ".gitignore" "node_modules/*" "package.json" "package-lock.json" "README.md" "LICENSE"
+zip -r "$OUTPUT_FILE" "$ADDON_DIR" -x "*.zip" "*.xpi" "*.sh" ".git/*" ".gitignore" "node_modules/*" "package.json" "package-lock.json" "*.md" "LICENSE" "screenshots/*"
 
 echo "Add-on successfully packed into $OUTPUT_FILE."
