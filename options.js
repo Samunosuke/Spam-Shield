@@ -40,7 +40,19 @@ const DEFAULT_SETTINGS = {
         dkim: { enabled: true, score: -20 },
         dmarc: { enabled: true, score: -20, penalizeNone: true },
         domainAge: { enabled: true, score: -40, minAgeDays: 90 },
-        dnsbl: { enabled: true, score: -80 },
+        dnsbl: {
+            enabled: true,
+            score: -80,
+            minHits: 1,
+            providers: {
+                nordspam: true,
+                spamhaus: true,
+                spamcop: true,
+                nixspam: true,
+                zerospam: true,
+                dronebl: false
+            }
+        },
         spfIpMatch: { enabled: true, score: -40 },
         spamKitFingerprint: { enabled: true, score: -80 }
     }
@@ -70,7 +82,12 @@ function mergeWithDefaults(saved) {
     // Merge each check individually so that missing sub-options fall back to their defaults
     const mergedChecks = {};
     for (const [key, defVal] of Object.entries(base.checks)) {
-        mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
+        const savedCheck = saved.checks && saved.checks[key] ? saved.checks[key] : {};
+        const mergedCheck = Object.assign({}, defVal, savedCheck);
+        if (defVal.providers) {
+            mergedCheck.providers = Object.assign({}, defVal.providers, savedCheck.providers || {});
+        }
+        mergedChecks[key] = mergedCheck;
     }
     const whitelist = Array.isArray(saved.whitelist) ? saved.whitelist : [];
     const blacklist = Array.isArray(saved.blacklist) ? saved.blacklist : [];
@@ -149,7 +166,16 @@ const chkFields = {
     },
     dnsbl: {
         enabled: document.getElementById('chk_dnsbl_enabled'),
-        score: document.getElementById('chk_dnsbl_score')
+        score: document.getElementById('chk_dnsbl_score'),
+        minHits: document.getElementById('chk_dnsbl_minHits'),
+        providers: {
+            nordspam: document.getElementById('chk_dnsbl_prov_nordspam'),
+            spamhaus: document.getElementById('chk_dnsbl_prov_spamhaus'),
+            spamcop: document.getElementById('chk_dnsbl_prov_spamcop'),
+            nixspam: document.getElementById('chk_dnsbl_prov_nixspam'),
+            zerospam: document.getElementById('chk_dnsbl_prov_zerospam'),
+            dronebl: document.getElementById('chk_dnsbl_prov_dronebl')
+        }
     },
     spfIpMatch: {
         enabled: document.getElementById('chk_spfIpMatch_enabled'),
@@ -491,8 +517,22 @@ function populateSettingsForm(settings) {
         if (fields.minAgeDays) {
             fields.minAgeDays.value = cfg.minAgeDays ?? 90;
         }
+        if (fields.minHits) {
+            fields.minHits.value = Math.max(1, Number(cfg.minHits) || 1);
+        }
+        if (fields.providers) {
+            const defProv = (DEFAULT_SETTINGS.checks[key] && DEFAULT_SETTINGS.checks[key].providers) || {};
+            const provCfg = cfg.providers || {};
+            for (const [pKey, pInput] of Object.entries(fields.providers)) {
+                if (pInput) {
+                    const fallback = defProv[pKey] ?? true;
+                    pInput.checked = provCfg[pKey] !== undefined ? Boolean(provCfg[pKey]) : fallback;
+                }
+            }
+        }
     }
 
+    syncDnsblProvidersState();
     applyLanguage();
 }
 
@@ -518,6 +558,17 @@ function collectSettingsFromForm() {
         }
         if (fields.minAgeDays) {
             checks[key].minAgeDays = Math.max(1, Number(fields.minAgeDays.value) || 90);
+        }
+        if (fields.minHits) {
+            checks[key].minHits = Math.max(1, Number(fields.minHits.value) || 1);
+        }
+        if (fields.providers) {
+            checks[key].providers = {};
+            for (const [pKey, pInput] of Object.entries(fields.providers)) {
+                if (pInput) {
+                    checks[key].providers[pKey] = pInput.checked;
+                }
+            }
         }
     }
 
@@ -956,9 +1007,31 @@ async function persistSettings(newSettings) {
     });
 }
 
+/**
+ * Enables or disables the individual DNSBL provider checkboxes depending on whether
+ * the primary DNSBL check checkbox is enabled.
+ */
+function syncDnsblProvidersState() {
+    const isEnabled = chkFields.dnsbl && chkFields.dnsbl.enabled ? chkFields.dnsbl.enabled.checked : true;
+    if (chkFields.dnsbl && chkFields.dnsbl.minHits) {
+        chkFields.dnsbl.minHits.disabled = !isEnabled;
+    }
+    if (chkFields.dnsbl && chkFields.dnsbl.providers) {
+        for (const input of Object.values(chkFields.dnsbl.providers)) {
+            if (input) {
+                input.disabled = !isEnabled;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Event listeners
 // ---------------------------------------------------------------------------
+
+if (chkFields.dnsbl && chkFields.dnsbl.enabled) {
+    chkFields.dnsbl.enabled.addEventListener('change', syncDnsblProvidersState);
+}
 
 // Event listeners – Language switch (applied and saved immediately)
 languageSelect.addEventListener('change', async () => {

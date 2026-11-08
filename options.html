@@ -172,10 +172,34 @@
               <td><input type="checkbox" id="chk_dnsbl_enabled"></td>
               <td>
                 <strong data-i18n="chk8_title">8. DNS-Blacklist (Domain &amp; Server-IP)</strong>
-                <div class="muted" style="font-size:11px;" data-i18n="chk8_desc">Prüft Domain und Einlieferungs-/A-Record-IP gegen öffentliche DNS-Blacklists (Nordspam, SpamCop, 0spam, Spamhaus).</div>
+                <div class="muted" style="font-size:11px;" data-i18n="chk8_desc">Prüft Domain und Einlieferungs-/A-Record-IP gegen konfigurierte DNS-Blacklists.</div>
+                <div class="dnsbl-providers-list" style="margin-top: 6px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; font-size: 11px;">
+                  <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_nordspam_title">
+                    <input type="checkbox" id="chk_dnsbl_prov_nordspam"> <span data-i18n="chk8_prov_nordspam">Nordspam (Domain &amp; IP)</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_spamhaus_title">
+                    <input type="checkbox" id="chk_dnsbl_prov_spamhaus"> <span data-i18n="chk8_prov_spamhaus">Spamhaus DBL (Domain)</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_spamcop_title">
+                    <input type="checkbox" id="chk_dnsbl_prov_spamcop"> <span data-i18n="chk8_prov_spamcop">SpamCop (IP)</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_nixspam_title">
+                    <input type="checkbox" id="chk_dnsbl_prov_nixspam"> <span data-i18n="chk8_prov_nixspam">NiX Spam / manitu (IP)</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_zerospam_title">
+                    <input type="checkbox" id="chk_dnsbl_prov_zerospam"> <span data-i18n="chk8_prov_zerospam">0spam BL (IP – Traps)</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_dronebl_title">
+                    <input type="checkbox" id="chk_dnsbl_prov_dronebl"> <span data-i18n="chk8_prov_dronebl">DroneBL (IP – Botnets)</span>
+                  </label>
+                </div>
               </td>
               <td><input type="number" id="chk_dnsbl_score" step="5" max="0" min="-500"></td>
-              <td class="muted" style="font-size:11px;">–</td>
+              <td>
+                <label style="font-size:11.5px; display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_opt_minhits_title">
+                  <span data-i18n="chk8_opt_minhits">Min. Treffer:</span> <input type="number" id="chk_dnsbl_minHits" min="1" max="10" step="1" style="width:55px;">
+                </label>
+              </td>
             </tr>
             <tr>
               <td><input type="checkbox" id="chk_spfIpMatch_enabled"></td>
