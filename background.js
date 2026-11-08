@@ -126,6 +126,7 @@ async function initExtension() {
     }
 
     setupContextMenus();
+    updateActionTitle();
 }
 
 // Rebuild context menus (and drop language-specific cached infos) whenever the UI language changes
@@ -139,8 +140,27 @@ if (messenger.storage && messenger.storage.onChanged) {
             g_LANG = nextLang;
             g_RDAP_CACHE.clear();
             setupContextMenus();
+            updateActionTitle();
         }
     });
+}
+
+/**
+ * Updates the browser action button tooltip and ensures the visible label stays empty in Thunderbird
+ */
+function updateActionTitle() {
+    if (messenger.action) {
+        if (typeof messenger.action.setTitle === 'function') {
+            messenger.action.setTitle({ title: L('action_tooltip') }).catch(err => {
+                console.warn('Could not set action title:', err);
+            });
+        }
+        if (typeof messenger.action.setLabel === 'function') {
+            messenger.action.setLabel({ label: '' }).catch(err => {
+                console.warn('Could not set action label:', err);
+            });
+        }
+    }
 }
 
 /**
