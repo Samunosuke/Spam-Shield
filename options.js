@@ -1,4 +1,29 @@
-// Default configuration (kept in sync with background.js so the options page can also operate directly on storage.local)
+/**
+ * Spam Shield – Options & Live Diagnostics Page Controller
+ *
+ * Responsibilities:
+ *  - Loading, editing, validating and persisting the add-on configuration (scores, thresholds, toggles)
+ *  - Managing the Whitelist / Blacklist (chips, inputs, quick buttons, right-click context menu)
+ *  - Triggering manual folder / selection scans and displaying live scan progress
+ *  - Running the interactive Live Domain Tester
+ *  - Rendering the filterable Live Diagnostics history table
+ *
+ * All DOM output is built with safe DOM APIs (createElement / textContent / replaceChildren);
+ * no innerHTML assignments are used (required for addons.thunderbird.net review).
+ */
+
+// ---------------------------------------------------------------------------
+// Default configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Default configuration (kept in sync with background.js so the options page can also
+ * operate directly on storage.local when the background script is temporarily unavailable).
+ * Each entry in `checks` corresponds to one validation tier:
+ *  - enabled: whether the check is evaluated at all
+ *  - score:   penalty (negative number) added to the total score if the check fails
+ *  - additional per-check options (stopOnFail, penalizeNone, minAgeDays)
+ */
 const DEFAULT_SETTINGS = {
     language: 'auto',
     spamThreshold: -50,
@@ -21,15 +46,28 @@ const DEFAULT_SETTINGS = {
     }
 };
 
+/**
+ * Creates a deep copy of DEFAULT_SETTINGS so callers can mutate the result
+ * without accidentally modifying the shared default object.
+ * @returns {object} A fresh, independent settings object containing all default values.
+ */
 function cloneDefaults() {
     return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 }
 
+/**
+ * Merges a (possibly partial or outdated) saved settings object with the current defaults.
+ * Ensures that newly introduced checks or options always exist with sensible default values,
+ * even if the stored configuration was written by an older add-on version.
+ * @param {object|null|undefined} saved Settings object loaded from storage or background.js.
+ * @returns {object} A complete settings object (all checks present, whitelist/blacklist guaranteed to be arrays).
+ */
 function mergeWithDefaults(saved) {
     const base = cloneDefaults();
     if (!saved || typeof saved !== 'object') {
         return base;
     }
+    // Merge each check individually so that missing sub-options fall back to their defaults
     const mergedChecks = {};
     for (const [key, defVal] of Object.entries(base.checks)) {
         mergedChecks[key] = Object.assign({}, defVal, saved.checks && saved.checks[key] ? saved.checks[key] : {});
@@ -42,6 +80,8 @@ function mergeWithDefaults(saved) {
 /**
  * Safely sends a runtime message to background.js without throwing an uncaught exception
  * if the background event page is asleep or the options tab was kept open across an addon reload.
+ * @param {object} payload Message object containing an `action` property and optional parameters.
+ * @returns {Promise<any|null>} The response of background.js, or null if communication failed.
  */
 async function sendToBackground(payload) {
     if (!messenger.runtime || typeof messenger.runtime.sendMessage !== 'function') {
@@ -55,6 +95,10 @@ async function sendToBackground(payload) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// DOM element references
+// ---------------------------------------------------------------------------
+
 // DOM elements – Settings
 const languageSelect = document.getElementById('languageSelect');
 const spamThresholdInput = document.getElementById('spamThreshold');
@@ -66,6 +110,11 @@ const saveStatus = document.getElementById('saveStatus');
 const clearCacheBtn = document.getElementById('clearCacheBtn');
 const cacheCountEl = document.getElementById('cacheCount');
 
+/**
+ * Maps each validation check key to its corresponding form controls.
+ * Used by populateSettingsForm() and collectSettingsFromForm() to read/write values generically.
+ * Optional controls (stopOnFail, penalizeNone, minAgeDays) only exist for specific checks.
+ */
 const chkFields = {
     domainExists: {
         enabled: document.getElementById('chk_domainExists_enabled'),
@@ -155,22 +204,47 @@ const ctxWlDomain = document.getElementById('ctxWlDomain');
 const ctxBlEmail = document.getElementById('ctxBlEmail');
 const ctxBlDomain = document.getElementById('ctxBlDomain');
 
+// ---------------------------------------------------------------------------
+// Page state
+// ---------------------------------------------------------------------------
+
+/** Currently active (merged) settings shown in the form. */
 let currentSettingsState = cloneDefaults();
+/** Complete diagnostic log (unfiltered) as delivered by background.js / storage. */
 let fullDiagnosticLog = [];
+/** Email address and wildcard domain of the history row the context menu was opened on. */
 let ctxMenuTarget = { email: '', domainPattern: '' };
+/** Last folder list received from background.js (cached to re-render after a language switch). */
 let lastFolderList = null;
+
+// ---------------------------------------------------------------------------
+// Generic helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Shortcut translation helper bound to the currently configured UI language.
+ * @param {string} key Translation key from I18N_MESSAGES (i18n.js).
+ * @param {object} [params={}] Placeholder values, e.g. { count: 3 } for "{count}".
+ * @returns {string} The localized and interpolated text.
  */
 function tr(key, params = {}) {
     return t(key, params, currentSettingsState.language || 'auto');
 }
 
+/**
+ * Returns the BCP 47 locale code used for date/time formatting in the diagnostics table.
+ * @returns {string} 'de-DE' when the effective UI language is German, otherwise 'en-US'.
+ */
 function getLocaleCode() {
     return resolveLanguage(currentSettingsState.language || 'auto') === 'de' ? 'de-DE' : 'en-US';
 }
 
+/**
+ * Escapes HTML special characters in a string.
+ * Kept as a defensive utility; current rendering uses textContent and does not require it.
+ * @param {string} str Raw input text.
+ * @returns {string} Escaped text that is safe to embed in HTML markup or attributes.
+ */
 function escapeHtml(str) {
     return String(str || '')
         .replace(/&/g, '&amp;')
@@ -179,6 +253,11 @@ function escapeHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
+/**
+ * Shows a short-lived status toast in the page header (e.g. "Saved", "Cache cleared").
+ * The message is cleared automatically after 3.5 seconds unless it was replaced in the meantime.
+ * @param {string} msg Localized message to display.
+ */
 function flashSaveStatus(msg) {
     saveStatus.textContent = msg;
     setTimeout(() => {
@@ -188,6 +267,12 @@ function flashSaveStatus(msg) {
     }, 3500);
 }
 
+/**
+ * Extracts a normalized email address from an RFC 5322 author string
+ * (e.g. "John Doe <john@example.com>" -> "john@example.com").
+ * @param {string} author Raw author/From header value.
+ * @returns {string} Lowercase email address, or an empty string if none could be found.
+ */
 function getEmailFromAuthorString(author) {
     if (!author || typeof author !== 'string') return '';
     const angleMatch = author.match(/<([^<>]+)>/);
@@ -196,10 +281,23 @@ function getEmailFromAuthorString(author) {
     return part.replace(/^[<"'\s]+|[>"'\s]+$/g, '').toLowerCase();
 }
 
+/**
+ * Checks whether a domain value is a placeholder for "no domain could be determined".
+ * Placeholders are written by background.js when sender parsing fails.
+ * @param {string} domain Domain value from a log entry.
+ * @returns {boolean} True if the domain is empty or a known placeholder ('(unbekannt)', '(unknown)', '-').
+ */
 function isUnknownDomain(domain) {
     return !domain || domain === '(unbekannt)' || domain === '(unknown)' || domain === '-';
 }
 
+/**
+ * Extracts the registrable root domain from a hostname (e.g. "mail.news.example.co.uk" -> "example.co.uk").
+ * Uses a small built-in list of common two-part public suffixes instead of the full Public Suffix List.
+ * Used to build wildcard patterns such as "*.example.com" for the Whitelist / Blacklist quick buttons.
+ * @param {string} domain Hostname or domain.
+ * @returns {string} Registrable domain, or an empty string for unknown/placeholder values.
+ */
 function getRegistrableDomain(domain) {
     if (isUnknownDomain(domain)) return '';
     const parts = domain.toLowerCase().split('.').filter(Boolean);
@@ -218,8 +316,14 @@ function getRegistrableDomain(domain) {
     return parts.slice(-2).join('.');
 }
 
+// ---------------------------------------------------------------------------
+// Rendering: language, mode badge, rule lists
+// ---------------------------------------------------------------------------
+
 /**
  * Re-applies all static and dynamic translations for the currently selected language.
+ * Static texts are translated via data-i18n attributes (applyI18nToDOM in i18n.js);
+ * dynamically generated parts (badge, chips, table, folder dropdown) are re-rendered.
  */
 function applyLanguage() {
     applyI18nToDOM(currentSettingsState.language || 'auto');
@@ -231,6 +335,10 @@ function applyLanguage() {
     }
 }
 
+/**
+ * Updates the mode badge next to the Dry-Run setting.
+ * @param {boolean} isDryRun True = evaluation mode (no messages are moved), false = active mode.
+ */
 function updateModeBadge(isDryRun) {
     if (isDryRun) {
         currentModeBadge.className = 'badge badge-warn';
@@ -241,6 +349,12 @@ function updateModeBadge(isDryRun) {
     }
 }
 
+/**
+ * Renders the Whitelist and Blacklist as removable "chips" including their entry counters.
+ * Each chip contains a remove button carrying data-list / data-pattern attributes, which are
+ * handled by the delegated click listeners on whitelistChips / blacklistChips.
+ * @param {object} settings Settings object containing `whitelist` and `blacklist` arrays.
+ */
 function renderRuleLists(settings) {
     const wl = Array.isArray(settings.whitelist) ? settings.whitelist : [];
     const bl = Array.isArray(settings.blacklist) ? settings.blacklist : [];
@@ -249,30 +363,70 @@ function renderRuleLists(settings) {
     blacklistCount.textContent = tr('opt_list_count', { count: bl.length });
 
     if (wl.length === 0) {
-        whitelistChips.innerHTML = `<span class="muted" style="font-size:11.5px;">${escapeHtml(tr('opt_wl_empty'))}</span>`;
+        const span = document.createElement('span');
+        span.className = 'muted';
+        span.style.fontSize = '11.5px';
+        span.textContent = tr('opt_wl_empty');
+        whitelistChips.replaceChildren(span);
     } else {
-        const removeTitle = escapeHtml(tr('title_remove_wl'));
-        whitelistChips.innerHTML = wl.map(pattern => `
-          <span class="rule-chip whitelist-chip">
-            <span>${escapeHtml(pattern)}</span>
-            <button type="button" data-list="whitelist" data-pattern="${escapeHtml(pattern)}" title="${removeTitle}">✕</button>
-          </span>
-        `).join('');
+        const removeTitle = tr('title_remove_wl');
+        const chipNodes = wl.map(pattern => {
+            const chip = document.createElement('span');
+            chip.className = 'rule-chip whitelist-chip';
+            const label = document.createElement('span');
+            label.textContent = pattern;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.dataset.list = 'whitelist';
+            btn.dataset.pattern = pattern;
+            btn.title = removeTitle;
+            btn.textContent = '✕';
+            chip.append(label, btn);
+            return chip;
+        });
+        whitelistChips.replaceChildren(...chipNodes);
     }
 
     if (bl.length === 0) {
-        blacklistChips.innerHTML = `<span class="muted" style="font-size:11.5px;">${escapeHtml(tr('opt_bl_empty'))}</span>`;
+        const span = document.createElement('span');
+        span.className = 'muted';
+        span.style.fontSize = '11.5px';
+        span.textContent = tr('opt_bl_empty');
+        blacklistChips.replaceChildren(span);
     } else {
-        const removeTitle = escapeHtml(tr('title_remove_bl'));
-        blacklistChips.innerHTML = bl.map(pattern => `
-          <span class="rule-chip blacklist-chip">
-            <span>${escapeHtml(pattern)}</span>
-            <button type="button" data-list="blacklist" data-pattern="${escapeHtml(pattern)}" title="${removeTitle}">✕</button>
-          </span>
-        `).join('');
+        const removeTitle = tr('title_remove_bl');
+        const chipNodes = bl.map(pattern => {
+            const chip = document.createElement('span');
+            chip.className = 'rule-chip blacklist-chip';
+            const label = document.createElement('span');
+            label.textContent = pattern;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.dataset.list = 'blacklist';
+            btn.dataset.pattern = pattern;
+            btn.title = removeTitle;
+            btn.textContent = '✕';
+            chip.append(label, btn);
+            return chip;
+        });
+        blacklistChips.replaceChildren(...chipNodes);
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settings & list persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Adds or removes a pattern on the Whitelist or Blacklist.
+ * The change is applied locally (optimistic UI), written to storage.local and forwarded to
+ * background.js so the running filter immediately uses the updated rule set.
+ * New entries are inserted at the top; duplicates (case-insensitive) are ignored.
+ * @param {'whitelist'|'blacklist'} listType Target list.
+ * @param {'add'|'remove'} op Operation to perform.
+ * @param {string} rawPattern Email address (user@domain.tld) or domain pattern (*.domain.tld / domain.tld).
+ * @returns {Promise<void>}
+ */
 async function modifyListEntry(listType, op, rawPattern) {
     const pattern = String(rawPattern || '').trim().toLowerCase();
     if (!pattern) return;
@@ -307,6 +461,11 @@ async function modifyListEntry(listType, op, rawPattern) {
         : tr('toast_list_removed', { pattern, list: listLabel }));
 }
 
+/**
+ * Fills all form controls (language, threshold, dry-run, check toggles, scores and options)
+ * from the given settings and stores the merged result as the current page state.
+ * @param {object} settings Settings object (partial objects are merged with defaults).
+ */
 function populateSettingsForm(settings) {
     const merged = mergeWithDefaults(settings);
     currentSettingsState = merged;
@@ -337,6 +496,12 @@ function populateSettingsForm(settings) {
     applyLanguage();
 }
 
+/**
+ * Reads all form controls and builds a complete settings object ready to be persisted.
+ * Numeric inputs are sanitized (fallback to defaults, minimum values enforced).
+ * Whitelist and Blacklist are taken from the current state, as they are edited separately.
+ * @returns {object} Settings object in the same structure as DEFAULT_SETTINGS.
+ */
 function collectSettingsFromForm() {
     const checks = {};
     for (const [key, fields] of Object.entries(chkFields)) {
@@ -368,17 +533,46 @@ function collectSettingsFromForm() {
     };
 }
 
-function renderCheckPills(checks) {
+// ---------------------------------------------------------------------------
+// Rendering: diagnostics table, scan banner, folder dropdown
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a container element holding one "pill" badge per validation check.
+ *  - Whitelisted / blacklisted results show a single pill (all other checks were skipped).
+ *  - Otherwise each check is shown as passed (✓, green), failed (✗, red, incl. score delta)
+ *    or disabled (grey). The detailed check info is available as hover tooltip.
+ * @param {object|null} checks Check results as returned by validateDomainDetailed (background.js).
+ * @returns {HTMLDivElement} A div.check-pills element ready to be appended to the DOM.
+ */
+function buildCheckPillsElement(checks) {
+    const container = document.createElement('div');
+    container.className = 'check-pills';
+
     if (!checks || Object.keys(checks).length === 0) {
-        return '<span class="muted">–</span>';
+        const span = document.createElement('span');
+        span.className = 'muted';
+        span.textContent = '–';
+        container.appendChild(span);
+        return container;
     }
     if (checks.whitelist) {
         const label = tr('pill_whitelist');
-        return `<div class="check-pills"><span class="check-pill pass" title="${escapeHtml(checks.whitelist.info || label)}">✓ ${escapeHtml(label)}</span></div>`;
+        const pill = document.createElement('span');
+        pill.className = 'check-pill pass';
+        pill.title = checks.whitelist.info || label;
+        pill.textContent = `✓ ${label}`;
+        container.appendChild(pill);
+        return container;
     }
     if (checks.blacklist) {
         const label = tr('pill_blacklist');
-        return `<div class="check-pills"><span class="check-pill fail" title="${escapeHtml(checks.blacklist.info || label)}">⛔ ${escapeHtml(label)} (${checks.blacklist.scoreDelta})</span></div>`;
+        const pill = document.createElement('span');
+        pill.className = 'check-pill fail';
+        pill.title = checks.blacklist.info || label;
+        pill.textContent = `⛔ ${label} (${checks.blacklist.scoreDelta})`;
+        container.appendChild(pill);
+        return container;
     }
 
     const labels = [
@@ -393,19 +587,32 @@ function renderCheckPills(checks) {
         ['spfIpMatch', tr('pill_spfIpMatch')],
         ['spamKitFingerprint', tr('pill_spamKitFingerprint')]
     ];
-    return `<div class="check-pills">${labels.map(([key, label]) => {
+    for (const [key, label] of labels) {
         const c = checks[key];
-        if (!c) return '';
+        if (!c) continue;
+        const pill = document.createElement('span');
         if (!c.enabled) {
-            return `<span class="check-pill off" title="${escapeHtml(label)}: ${escapeHtml(tr('status_disabled'))}">${escapeHtml(label)}: ${escapeHtml(tr('status_off_short'))}</span>`;
+            pill.className = 'check-pill off';
+            pill.title = `${label}: ${tr('status_disabled')}`;
+            pill.textContent = `${label}: ${tr('status_off_short')}`;
+        } else {
+            const cls = c.passed ? 'pass' : 'fail';
+            const icon = c.passed ? '✓' : '✗';
+            const deltaStr = c.scoreDelta ? ` (${c.scoreDelta})` : '';
+            pill.className = `check-pill ${cls}`;
+            pill.title = `${label}: ${c.info || ''}`;
+            pill.textContent = `${icon} ${label}${deltaStr}`;
         }
-        const cls = c.passed ? 'pass' : 'fail';
-        const icon = c.passed ? '✓' : '✗';
-        const deltaStr = c.scoreDelta ? ` (${c.scoreDelta})` : '';
-        return `<span class="check-pill ${cls}" title="${escapeHtml(label + ': ' + (c.info || ''))}">${icon} ${escapeHtml(label)}${deltaStr}</span>`;
-    }).join('')}</div>`;
+        container.appendChild(pill);
+    }
+    return container;
 }
 
+/**
+ * Translates the internal scan source identifier of a log entry into a readable label.
+ * @param {string} source 'auto' | 'folder-scan' | 'context-folder' | 'context-messages' | 'selected-messages'
+ * @returns {string} Localized label (falls back to the raw value or "unknown").
+ */
 function formatSourceLabel(source) {
     switch (source) {
         case 'auto': return tr('src_auto');
@@ -417,6 +624,169 @@ function formatSourceLabel(source) {
     }
 }
 
+/**
+ * Creates a single table row (<tr>) for the Live Diagnostics history table.
+ * Columns: 1) time/date, 2) folder/source, 3) domain/author, 4) subject,
+ *          5) check pills, 6) score/threshold, 7) action badge, 8) quick list buttons.
+ * The row carries data-row-email / data-row-domain attributes used by the right-click context menu.
+ * @param {object} entry Diagnostic log entry written by background.js.
+ * @param {string} localeCode Locale code for date/time formatting (see getLocaleCode()).
+ * @returns {HTMLTableRowElement} Fully populated table row.
+ */
+function createDiagnosticRow(entry, localeCode) {
+    const trEl = document.createElement('tr');
+    const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
+    const rootDom = getRegistrableDomain(entry.domain) || (!isUnknownDomain(entry.domain) ? entry.domain : '');
+    const domainWildcard = rootDom ? `*.${rootDom}` : '';
+
+    if (email) trEl.dataset.rowEmail = email;
+    if (domainWildcard) trEl.dataset.rowDomain = domainWildcard;
+
+    // Col 1: Time & Date
+    const tdTime = document.createElement('td');
+    tdTime.style.whiteSpace = 'nowrap';
+    const dt = new Date(entry.timestamp);
+    const timeStr = dt.toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStr = dt.toLocaleDateString(localeCode);
+    const dTime = document.createElement('div');
+    const strongTime = document.createElement('strong');
+    strongTime.textContent = timeStr;
+    dTime.appendChild(strongTime);
+    const dDate = document.createElement('div');
+    dDate.className = 'muted';
+    dDate.style.fontSize = '10.5px';
+    dDate.textContent = dateStr;
+    tdTime.append(dTime, dDate);
+
+    // Col 2: Folder & Source
+    const tdFolder = document.createElement('td');
+    const dFold = document.createElement('div');
+    const strongFold = document.createElement('strong');
+    strongFold.textContent = entry.folderName || '';
+    dFold.appendChild(strongFold);
+    const dSrc = document.createElement('div');
+    dSrc.className = 'muted';
+    dSrc.style.fontSize = '11px';
+    dSrc.textContent = formatSourceLabel(entry.source);
+    tdFolder.append(dFold, dSrc);
+
+    // Col 3: Domain & Author
+    const tdDom = document.createElement('td');
+    const dDom = document.createElement('div');
+    const strongDom = document.createElement('strong');
+    strongDom.textContent = entry.domain || '';
+    dDom.appendChild(strongDom);
+    const dAuth = document.createElement('div');
+    dAuth.className = 'muted truncate';
+    dAuth.style.cssText = 'font-size:11px; max-width:210px;';
+    dAuth.title = entry.author || '';
+    dAuth.textContent = entry.author || '';
+    tdDom.append(dDom, dAuth);
+
+    // Col 4: Subject
+    const tdSubj = document.createElement('td');
+    tdSubj.style.maxWidth = '260px';
+    const dSubj = document.createElement('div');
+    dSubj.title = entry.subject || '';
+    dSubj.textContent = entry.subject || '';
+    tdSubj.appendChild(dSubj);
+
+    // Col 5: Check pills
+    const tdChecks = document.createElement('td');
+    tdChecks.style.minWidth = '440px';
+    tdChecks.appendChild(buildCheckPillsElement(entry.checks));
+
+    // Col 6: Score
+    const tdScore = document.createElement('td');
+    tdScore.style.whiteSpace = 'nowrap';
+    const strongScore = document.createElement('strong');
+    strongScore.style.fontSize = '13px';
+    strongScore.style.color = entry.isSpam ? 'var(--danger)' : 'var(--success)';
+    strongScore.textContent = String(entry.score);
+    const spanThresh = document.createElement('span');
+    spanThresh.className = 'muted';
+    spanThresh.style.fontSize = '11px';
+    spanThresh.textContent = ` / ${entry.threshold}`;
+    tdScore.append(strongScore, spanThresh);
+
+    // Col 7: Badge / Status
+    const tdStatus = document.createElement('td');
+    const badge = document.createElement('span');
+    let badgeClass = 'badge-ok';
+    if (entry.actionTaken === 'moved') {
+        badgeClass = 'badge-spam';
+    } else if (entry.actionTaken === 'dry-run') {
+        badgeClass = 'badge-warn';
+    } else if (entry.actionTaken === 'error') {
+        badgeClass = 'badge-neutral';
+    }
+    badge.className = `badge ${badgeClass}`;
+    badge.textContent = entry.actionLabel || entry.actionTaken;
+    tdStatus.appendChild(badge);
+
+    // Col 8: Quick buttons
+    const tdActions = document.createElement('td');
+    if (email || domainWildcard) {
+        const btnGroup = document.createElement('div');
+        btnGroup.className = 'mini-btn-group';
+
+        if (email) {
+            const btnWlMail = document.createElement('button');
+            btnWlMail.type = 'button';
+            btnWlMail.className = 'mini-btn wl';
+            btnWlMail.dataset.quickList = 'whitelist';
+            btnWlMail.dataset.quickPattern = email;
+            btnWlMail.title = tr('title_wl_mail', { pattern: email });
+            btnWlMail.textContent = tr('btn_wl_mail');
+            btnGroup.appendChild(btnWlMail);
+        }
+        if (domainWildcard) {
+            const btnWlDom = document.createElement('button');
+            btnWlDom.type = 'button';
+            btnWlDom.className = 'mini-btn wl';
+            btnWlDom.dataset.quickList = 'whitelist';
+            btnWlDom.dataset.quickPattern = domainWildcard;
+            btnWlDom.title = tr('title_wl_dom', { pattern: domainWildcard });
+            btnWlDom.textContent = tr('btn_wl_dom');
+            btnGroup.appendChild(btnWlDom);
+        }
+        if (email) {
+            const btnBlMail = document.createElement('button');
+            btnBlMail.type = 'button';
+            btnBlMail.className = 'mini-btn bl';
+            btnBlMail.dataset.quickList = 'blacklist';
+            btnBlMail.dataset.quickPattern = email;
+            btnBlMail.title = tr('title_bl_mail', { pattern: email });
+            btnBlMail.textContent = tr('btn_bl_mail');
+            btnGroup.appendChild(btnBlMail);
+        }
+        if (domainWildcard) {
+            const btnBlDom = document.createElement('button');
+            btnBlDom.type = 'button';
+            btnBlDom.className = 'mini-btn bl';
+            btnBlDom.dataset.quickList = 'blacklist';
+            btnBlDom.dataset.quickPattern = domainWildcard;
+            btnBlDom.title = tr('title_bl_dom', { pattern: domainWildcard });
+            btnBlDom.textContent = tr('btn_bl_dom');
+            btnGroup.appendChild(btnBlDom);
+        }
+        tdActions.appendChild(btnGroup);
+    } else {
+        const spanMuted = document.createElement('span');
+        spanMuted.className = 'muted';
+        spanMuted.textContent = '–';
+        tdActions.appendChild(spanMuted);
+    }
+
+    trEl.append(tdTime, tdFolder, tdDom, tdSubj, tdChecks, tdScore, tdStatus, tdActions);
+    return trEl;
+}
+
+/**
+ * Renders the Live Diagnostics table from fullDiagnosticLog.
+ * Applies the status filter (all / spam / ok) and the free-text search (domain, author,
+ * subject, folder), updates the statistics line and shows an empty-state row if nothing matches.
+ */
 function renderDiagnosticTable() {
     const statusFilter = logFilterStatus.value;
     const query = (logSearchInput.value || '').trim().toLowerCase();
@@ -436,75 +806,27 @@ function renderDiagnosticTable() {
 
     if (filtered.length === 0) {
         const emptyKey = fullDiagnosticLog.length === 0 ? 'opt_diag_empty' : 'opt_diag_no_match';
-        diagTableBody.innerHTML = `
-          <tr>
-            <td colspan="8" class="muted" style="text-align:center; padding:24px;">
-              ${escapeHtml(tr(emptyKey))}
-            </td>
-          </tr>
-        `;
+        const emptyTr = document.createElement('tr');
+        const emptyTd = document.createElement('td');
+        emptyTd.colSpan = 8;
+        emptyTd.className = 'muted';
+        emptyTd.style.cssText = 'text-align:center; padding:24px;';
+        emptyTd.textContent = tr(emptyKey);
+        emptyTr.appendChild(emptyTd);
+        diagTableBody.replaceChildren(emptyTr);
         return;
     }
 
     const localeCode = getLocaleCode();
-    diagTableBody.innerHTML = filtered.map(entry => {
-        const dt = new Date(entry.timestamp);
-        const timeStr = dt.toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const dateStr = dt.toLocaleDateString(localeCode);
-
-        const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
-        const rootDom = getRegistrableDomain(entry.domain) || (!isUnknownDomain(entry.domain) ? entry.domain : '');
-        const domainWildcard = rootDom ? `*.${rootDom}` : '';
-
-        let badgeClass = 'badge-ok';
-        if (entry.actionTaken === 'moved') {
-            badgeClass = 'badge-spam';
-        } else if (entry.actionTaken === 'dry-run') {
-            badgeClass = 'badge-warn';
-        } else if (entry.actionTaken === 'error') {
-            badgeClass = 'badge-neutral';
-        }
-
-        const quickButtonsHtml = (email || domainWildcard) ? `
-          <div class="mini-btn-group">
-            ${email ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(email)}" title="${escapeHtml(tr('title_wl_mail', { pattern: email }))}">${escapeHtml(tr('btn_wl_mail'))}</button>` : ''}
-            ${domainWildcard ? `<button type="button" class="mini-btn wl" data-quick-list="whitelist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="${escapeHtml(tr('title_wl_dom', { pattern: domainWildcard }))}">${escapeHtml(tr('btn_wl_dom'))}</button>` : ''}
-            ${email ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(email)}" title="${escapeHtml(tr('title_bl_mail', { pattern: email }))}">${escapeHtml(tr('btn_bl_mail'))}</button>` : ''}
-            ${domainWildcard ? `<button type="button" class="mini-btn bl" data-quick-list="blacklist" data-quick-pattern="${escapeHtml(domainWildcard)}" title="${escapeHtml(tr('title_bl_dom', { pattern: domainWildcard }))}">${escapeHtml(tr('btn_bl_dom'))}</button>` : ''}
-          </div>
-        ` : '<span class="muted">–</span>';
-
-        return `
-          <tr data-row-email="${escapeHtml(email)}" data-row-domain="${escapeHtml(domainWildcard)}">
-            <td style="white-space:nowrap;">
-              <div><strong>${timeStr}</strong></div>
-              <div class="muted" style="font-size:10.5px;">${dateStr}</div>
-            </td>
-            <td>
-              <div><strong>${escapeHtml(entry.folderName)}</strong></div>
-              <div class="muted" style="font-size:11px;">${escapeHtml(formatSourceLabel(entry.source))}</div>
-            </td>
-            <td>
-              <div><strong>${escapeHtml(entry.domain)}</strong></div>
-              <div class="muted truncate" style="font-size:11px; max-width:210px;" title="${escapeHtml(entry.author)}">${escapeHtml(entry.author)}</div>
-            </td>
-            <td style="max-width:260px;">
-              <div title="${escapeHtml(entry.subject)}">${escapeHtml(entry.subject)}</div>
-            </td>
-            <td style="min-width:440px;">${renderCheckPills(entry.checks)}</td>
-            <td style="white-space:nowrap;">
-              <strong style="font-size:13px; color:${entry.isSpam ? 'var(--danger)' : 'var(--success)'};">${entry.score}</strong>
-              <span class="muted" style="font-size:11px;"> / ${entry.threshold}</span>
-            </td>
-            <td>
-              <span class="badge ${badgeClass}">${escapeHtml(entry.actionLabel || entry.actionTaken)}</span>
-            </td>
-            <td>${quickButtonsHtml}</td>
-          </tr>
-        `;
-    }).join('');
+    const rows = filtered.map(entry => createDiagnosticRow(entry, localeCode));
+    diagTableBody.replaceChildren(...rows);
 }
 
+/**
+ * Shows/updates the scan progress banner (text and progress bar) while a scan is running
+ * and disables all scan buttons to prevent parallel scans. Hides the banner when finished.
+ * @param {object|null} scanState Scan state from background.js ({ running, sourceName, processed, total, spamCount }).
+ */
 function updateScanBanner(scanState) {
     if (!scanState || !scanState.running) {
         scanBanner.classList.add('hidden');
@@ -529,30 +851,58 @@ function updateScanBanner(scanState) {
     scanProgressFill.style.width = `${pct}%`;
 }
 
+/**
+ * Fills the folder dropdown used for manual folder scans.
+ * The previously selected folder is restored if it still exists in the new list.
+ * @param {Array<{id: string, displayPath: string}>} folders Folder list from background.js.
+ */
 function renderFolderOptions(folders) {
     if (!Array.isArray(folders) || folders.length === 0) {
-        folderSelect.innerHTML = `<option value="">${escapeHtml(tr('opt_folders_empty'))}</option>`;
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = tr('opt_folders_empty');
+        folderSelect.replaceChildren(opt);
         return;
     }
     const currentVal = folderSelect.value;
-    folderSelect.innerHTML = folders.map(f =>
-        `<option value="${escapeHtml(f.id)}">${escapeHtml(f.displayPath)}</option>`
-    ).join('');
+    const optionNodes = folders.map(f => {
+        const opt = document.createElement('option');
+        opt.value = f.id;
+        opt.textContent = f.displayPath;
+        return opt;
+    });
+    folderSelect.replaceChildren(...optionNodes);
     if (currentVal && folders.some(f => f.id === currentVal)) {
         folderSelect.value = currentVal;
     }
 }
 
+/**
+ * Requests the list of all mail folders (across all accounts) from background.js
+ * and populates the folder dropdown. Shows an error option if loading fails.
+ * @returns {Promise<void>}
+ */
 async function loadFoldersDropdown() {
     try {
         const res = await sendToBackground({ action: 'GET_ALL_FOLDERS' });
         lastFolderList = (res && res.folders) || [];
         renderFolderOptions(lastFolderList);
     } catch (err) {
-        folderSelect.innerHTML = `<option value="">${escapeHtml(tr('opt_folders_err', { error: err.message }))}</option>`;
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = tr('opt_folders_err', { error: err.message });
+        folderSelect.replaceChildren(opt);
     }
 }
 
+/**
+ * Loads the current add-on state (settings, diagnostic log, cache size, scan state).
+ * storage.local is read first as a fallback; the live state from background.js takes precedence.
+ * @param {boolean} [includeSettingsForm=false] If true, all form fields are overwritten with the loaded
+ *        settings (used on initial page load). If false, only lists/table are refreshed so that
+ *        unsaved form edits by the user are not lost.
+ * @returns {Promise<void>}
+ */
 async function loadState(includeSettingsForm = false) {
     try {
         let storedSettings = null;
@@ -591,6 +941,10 @@ async function loadState(includeSettingsForm = false) {
 
 /**
  * Persists the given settings both directly in storage.local and via background.js.
+ * Writing to storage.local directly ensures the change survives even if the background
+ * script is currently not reachable; the SAVE_SETTINGS message updates the running filter.
+ * @param {object} newSettings Complete settings object to store.
+ * @returns {Promise<void>}
  */
 async function persistSettings(newSettings) {
     if (messenger.storage && messenger.storage.local) {
@@ -601,6 +955,10 @@ async function persistSettings(newSettings) {
         settings: newSettings
     });
 }
+
+// ---------------------------------------------------------------------------
+// Event listeners
+// ---------------------------------------------------------------------------
 
 // Event listeners – Language switch (applied and saved immediately)
 languageSelect.addEventListener('change', async () => {
@@ -615,6 +973,7 @@ languageSelect.addEventListener('change', async () => {
 });
 
 // Event listeners – Settings
+// Save: collect all form values, persist them and re-render the form with the normalized values
 saveSettingsBtn.addEventListener('click', async () => {
     try {
         const newSettings = collectSettingsFromForm();
@@ -627,6 +986,7 @@ saveSettingsBtn.addEventListener('click', async () => {
     }
 });
 
+// Reset: restore default checks/scores while keeping the user's lists and language
 resetSettingsBtn.addEventListener('click', async () => {
     try {
         const defaults = cloneDefaults();
@@ -644,6 +1004,7 @@ resetSettingsBtn.addEventListener('click', async () => {
 });
 
 // Event listeners – Whitelist & Blacklist inputs & chip removal
+// Add buttons read the input field, clear it and add the pattern; Enter key triggers the add button
 addWhitelistBtn.addEventListener('click', async () => {
     const val = whitelistInput.value.trim();
     if (!val) return;
@@ -672,6 +1033,7 @@ blacklistInput.addEventListener('keydown', async (e) => {
     }
 });
 
+// Delegated click handlers: remove a list entry when its chip's ✕ button is clicked
 whitelistChips.addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-list="whitelist"]');
     if (!btn) return;
@@ -685,6 +1047,7 @@ blacklistChips.addEventListener('click', async (e) => {
 });
 
 // Event listeners – Quick buttons & right-click context menu in the history table
+// Quick buttons (+WL / ⛔BL) inside the history table rows (delegated click handler)
 diagTableBody.addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-quick-list]');
     if (!btn) return;
@@ -693,6 +1056,8 @@ diagTableBody.addEventListener('click', async (e) => {
     await modifyListEntry(listType, 'add', pattern);
 });
 
+// Custom right-click context menu on history rows: offers Whitelist/Blacklist actions
+// for the row's sender email and wildcard domain. The menu is clamped to stay inside the viewport.
 diagTableBody.addEventListener('contextmenu', (e) => {
     const row = e.target.closest('tr[data-row-email], tr[data-row-domain]');
     if (!row) return;
@@ -716,6 +1081,7 @@ diagTableBody.addEventListener('contextmenu', (e) => {
     ctxBlDomain.style.display = domainPattern ? 'flex' : 'none';
     ctxBlDomain.textContent = tr('ctx_bl_domain', { domain: domainPattern });
 
+    // Approximate menu dimensions used to keep the menu fully visible near the window edges
     const menuWidth = 310;
     const menuHeight = 160;
     const x = Math.min(e.clientX, window.innerWidth - menuWidth - 10);
@@ -726,6 +1092,10 @@ diagTableBody.addEventListener('contextmenu', (e) => {
     historyContextMenu.classList.add('visible');
 });
 
+/**
+ * Hides the custom history context menu.
+ * Triggered by any click on the page or by scrolling.
+ */
 function hideContextMenu() {
     historyContextMenu.classList.remove('visible');
 }
@@ -733,18 +1103,26 @@ function hideContextMenu() {
 document.addEventListener('click', hideContextMenu);
 window.addEventListener('scroll', hideContextMenu, true);
 
+// Context menu actions use the target captured when the menu was opened
 ctxWlEmail.addEventListener('click', () => modifyListEntry('whitelist', 'add', ctxMenuTarget.email));
 ctxWlDomain.addEventListener('click', () => modifyListEntry('whitelist', 'add', ctxMenuTarget.domainPattern));
 ctxBlEmail.addEventListener('click', () => modifyListEntry('blacklist', 'add', ctxMenuTarget.email));
 ctxBlDomain.addEventListener('click', () => modifyListEntry('blacklist', 'add', ctxMenuTarget.domainPattern));
 
 // Event listeners – Cache, Folder Scan, Domain Tester
+// Clears the in-memory DNS/RDAP cache in background.js (forces fresh lookups on the next scan)
 clearCacheBtn.addEventListener('click', async () => {
     await sendToBackground({ action: 'CLEAR_DNS_CACHE' });
     cacheCountEl.textContent = '0';
     flashSaveStatus(tr('toast_cache_cleared'));
 });
 
+/**
+ * Displays the result of a manual scan request below the scan buttons.
+ * @param {object|null} res Response from background.js ({ processed, spamCount } or { error }).
+ * @param {string} doneKey Translation key for the success message.
+ * @returns {boolean} True if the scan succeeded (caller should reload the state), false on error.
+ */
 function reportScanResult(res, doneKey) {
     if (!res || res.error) {
         folderScanResult.textContent = tr('toast_err', { error: (res && res.error) || tr('bg_not_reachable') });
@@ -754,6 +1132,7 @@ function reportScanResult(res, doneKey) {
     return true;
 }
 
+// Scans the folder selected in the dropdown
 scanSelectedFolderBtn.addEventListener('click', async () => {
     const folderId = folderSelect.value;
     if (!folderId) return;
@@ -769,6 +1148,7 @@ scanSelectedFolderBtn.addEventListener('click', async () => {
     }
 });
 
+// Scans the folder currently displayed in the active Thunderbird mail tab
 scanActiveFolderBtn.addEventListener('click', async () => {
     folderScanResult.textContent = tr('scan_starting_active');
     const res = await sendToBackground({ action: 'SCAN_ACTIVE_FOLDER' });
@@ -777,6 +1157,7 @@ scanActiveFolderBtn.addEventListener('click', async () => {
     }
 });
 
+// Scans the messages currently selected in the active Thunderbird mail tab
 scanSelectedMsgsBtn.addEventListener('click', async () => {
     folderScanResult.textContent = tr('scan_starting_selected');
     const res = await sendToBackground({ action: 'SCAN_SELECTED_MESSAGES' });
@@ -785,43 +1166,66 @@ scanSelectedMsgsBtn.addEventListener('click', async () => {
     }
 });
 
+// Live Domain Tester: validates a domain or full sender address (optionally with a DKIM-Signature
+// header) against the active rule set and renders the result card with score, status and check pills
 runDomainTestBtn.addEventListener('click', async () => {
     const input = testDomainInput.value.trim();
     const dkimHeader = testDkimInput.value.trim();
     if (!input) {
-        domainTestOutput.innerHTML = `<span style="color:var(--danger);">${escapeHtml(tr('opt_tester_empty_err'))}</span>`;
+        const span = document.createElement('span');
+        span.style.color = 'var(--danger)';
+        span.textContent = tr('opt_tester_empty_err');
+        domainTestOutput.replaceChildren(span);
         return;
     }
 
-    domainTestOutput.innerHTML = `<span class="muted">${escapeHtml(tr('opt_tester_running'))}</span>`;
+    const spanRunning = document.createElement('span');
+    spanRunning.className = 'muted';
+    spanRunning.textContent = tr('opt_tester_running');
+    domainTestOutput.replaceChildren(spanRunning);
+
     const res = await sendToBackground({
         action: 'TEST_DOMAIN',
         input,
         dkimHeader: dkimHeader || null
     });
     if (!res || res.error) {
-        domainTestOutput.innerHTML = `<span style="color:var(--danger);">${escapeHtml(tr('toast_err', { error: (res && res.error) || tr('bg_not_reachable') }))}</span>`;
+        const spanErr = document.createElement('span');
+        spanErr.style.color = 'var(--danger)';
+        spanErr.textContent = tr('toast_err', { error: (res && res.error) || tr('bg_not_reachable') });
+        domainTestOutput.replaceChildren(spanErr);
         return;
     }
     const badgeCls = res.isSpam ? 'badge-spam' : 'badge-ok';
     const statusTxt = res.whitelisted
         ? `WHITELIST (${res.matchedRule})`
         : (res.blacklisted ? `BLACKLIST (${res.matchedRule})` : (res.isSpam ? tr('opt_tester_status_spam') : tr('opt_tester_status_ok')));
-    domainTestOutput.innerHTML = `
-      <div style="padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <strong>Domain: ${escapeHtml(res.domain)}${res.senderEmail ? ` (${escapeHtml(res.senderEmail)})` : ''}</strong>
-          <span class="badge ${badgeCls}">Score: ${res.score} · ${escapeHtml(statusTxt)}</span>
-        </div>
-        ${renderCheckPills(res.checks)}
-      </div>
-    `;
+
+    const card = document.createElement('div');
+    card.style.cssText = 'padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;';
+
+    const cardHeader = document.createElement('div');
+    cardHeader.style.cssText = 'display:flex; justify-content:space-between; align-items:center;';
+
+    const strongTitle = document.createElement('strong');
+    strongTitle.textContent = `Domain: ${res.domain}${res.senderEmail ? ` (${res.senderEmail})` : ''}`;
+
+    const badgeSpan = document.createElement('span');
+    badgeSpan.className = `badge ${badgeCls}`;
+    badgeSpan.textContent = `Score: ${res.score} · ${statusTxt}`;
+
+    cardHeader.append(strongTitle, badgeSpan);
+    card.append(cardHeader, buildCheckPillsElement(res.checks));
+    domainTestOutput.replaceChildren(card);
+
     await loadState(false);
 });
 
+// Re-render the history table whenever the status filter or the search text changes
 logFilterStatus.addEventListener('change', renderDiagnosticTable);
 logSearchInput.addEventListener('input', renderDiagnosticTable);
 
+// Clears the complete diagnostic history (storage.local and in-memory log in background.js)
 clearLogBtn.addEventListener('click', async () => {
     if (messenger.storage && messenger.storage.local) {
         await messenger.storage.local.set({ diagnosticLog: [] });
@@ -831,6 +1235,7 @@ clearLogBtn.addEventListener('click', async () => {
     renderDiagnosticTable();
 });
 
+// Live updates broadcast by background.js: scan progress, scan completion, new log entries, settings changes
 if (messenger.runtime && messenger.runtime.onMessage) {
     messenger.runtime.onMessage.addListener((msg) => {
         if (!msg) return;
@@ -845,6 +1250,8 @@ if (messenger.runtime && messenger.runtime.onMessage) {
     });
 }
 
+// Keeps the page in sync when storage.local is modified elsewhere
+// (e.g. by the popup, the Thunderbird context menus or another open options tab)
 if (messenger.storage && messenger.storage.onChanged) {
     messenger.storage.onChanged.addListener((changes, area) => {
         if (area === 'local') {
@@ -867,7 +1274,9 @@ if (messenger.storage && messenger.storage.onChanged) {
     });
 }
 
-// Initial load
+// ---------------------------------------------------------------------------
+// Initial load: translate static texts, load state incl. form values, populate folder dropdown
+// ---------------------------------------------------------------------------
 applyI18nToDOM(currentSettingsState.language);
 loadState(true);
 loadFoldersDropdown();
