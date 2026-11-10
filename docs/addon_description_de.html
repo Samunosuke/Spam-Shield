@@ -1,0 +1,27 @@
+<strong>Spam Shield</strong> schützt Ihr Thunderbird-Postfach vor hochentwickeltem E-Mail-Spam, Phishing und Fake-Domains durch eine mehrstufige <abbr title="DNS over HTTPS">DoH</abbr>-Heuristik-Engine.
+
+<blockquote>Klassische Spam-Filter scheitern zunehmend an automatisiert generierten Spam-Domains: Spammer richten täglich massenhaft Wegwerf-Domains mit scheinbar perfekten SPF- und DKIM-Einträgen ein. Spam Shield durchschaut diese Baukasten-Muster zuverlässig anhand tiefer DNS- und Header-Prüfungen.</blockquote>
+
+<strong>Die 10 Schutzprüfungen im Überblick:</strong>
+<ol>
+  <li><strong>Domain-Existenz:</strong> Prüft, ob die Absender-Domain im DNS tatsächlich existiert (kein <code>NXDOMAIN</code>).</li>
+  <li><strong>DNSSEC-Signatur:</strong> Prüft, ob die DNS-Einträge kryptografisch via <abbr title="Domain Name System Security Extensions">DNSSEC</abbr> (<code>AD</code>-Flag) signiert sind.</li>
+  <li><strong>MX-Record:</strong> Verifiziert, ob die Absender-Domain überhaupt E-Mails empfangen kann.</li>
+  <li><strong>SPF-Record:</strong> Prüft auf einen gültigen <code>v=spf1</code>-Eintrag im DNS.</li>
+  <li><strong>DKIM-Signatur &amp; Key:</strong> Überprüft die kryptografische E-Mail-Signatur und den öffentlichen Schlüssel (<code>_domainkey</code>).</li>
+  <li><strong>DMARC-Richtlinie:</strong> Entlarvt fehlende oder wirkungslose Richtlinien (z. B. reine <code>p=none</code>-Policies ohne Durchsetzung).</li>
+  <li><strong>Domain-Alter (<abbr title="Registration Data Access Protocol">RDAP</abbr>):</strong> Erkennt frisch registrierte Wegwerf-Domains (<em>Newly Registered Domains</em>, jünger als z. B. 90 Tage) über das offizielle IANA-Bootstrap-Verzeichnis.</li>
+  <li><strong>Modulare DNS-Blacklists (<abbr title="DNS-based Blackhole List">DNSBL</abbr>):</strong> Prüft Domain und Einlieferungs-IP gegen öffentliche Reputationslisten (<em>Nordspam</em>, <em>Spamhaus DBL</em>, <em>SpamCop</em>, <em>NiX Spam / manitu</em>, <em>0spam</em>, <em>DroneBL</em>). Einzelne Listen können bei Bedarf abgewählt und die Mindestanzahl an Treffern frei definiert werden.</li>
+  <li><strong>SPF-Absender-IP-Abgleich:</strong> Gleicht die tatsächliche Server-IP aus den <code>Received</code>-Headern gegen den SPF-Record der Domain ab.</li>
+  <li><strong>Spam-Baukasten-Fingerabdruck:</strong> Identifiziert automatisierte Spam-Generatoren anhand kombinierter Heuristiken (Self-MX <code>10 &lt;domain&gt;</code>, Raw-IP-SPF, Generator-DMARC, Snowshoe-Subnetze).</li>
+</ol>
+
+<strong>Wichtigste Features:</strong>
+<ul>
+  <li><strong>Nahtlose Thunderbird-Integration:</strong> Ganze Ordner oder markierte E-Mails direkt per Rechtsklick prüfen.</li>
+  <li><strong>1-Klick Whitelist &amp; Blacklist:</strong> Absender-Adressen oder ganze Domains (inkl. Wildcard <code>*.domain.de</code>) mit einem Klick freigeben oder blockieren.</li>
+  <li><strong>Evaluierungs-Modus (Dry-Run):</strong> Gefahrloses Testen und Protokollieren aller Bewertungen, ohne dass Nachrichten verschoben werden.</li>
+  <li><strong>Transparente Live-Diagnose:</strong> Ausführliche Tooltips zu jeder Einzelprüfung, Suchfilter und interaktiver Domain-Tester in den Einstellungen.</li>
+  <li><strong>Volle Kontrolle &amp; Privatsphäre:</strong> Jeder Punktabzug und Schwellenwert ist frei anpassbar. Keine externen Tracking-Server – Anfragen erfolgen direkt und verschlüsselt über DoH.</li>
+</ul>
+

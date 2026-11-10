@@ -13,6 +13,6 @@ if [ -f "$OUTPUT_FILE" ]; then
 fi
 
 # Compress the add-on code into a ZIP (XPI) archive
-zip -r "$OUTPUT_FILE" "$ADDON_DIR" -x "*.zip" "*.xpi" "*.sh" ".git/*" ".gitignore" "node_modules/*" "package.json" "package-lock.json" "*.md" "LICENSE" "screenshots/*"
+zip -r "$OUTPUT_FILE" "$ADDON_DIR" -x "*.zip" "*.xpi" "*.sh" ".git/*" ".gitignore" "node_modules/*" "package.json" "package-lock.json" "*.md" "LICENSE" "screenshots/*" "docs/*"
 
 echo "Add-on successfully packed into $OUTPUT_FILE."
