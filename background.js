@@ -52,6 +52,9 @@ const DEFAULT_SETTINGS = {
     dryRun: false,
     monitorAllFolders: true,
     maxLogEntries: 100,
+    showMessageBanner: true,
+    autoCheckOnDisplay: false,
+    tagEvaluatedMessages: true,
     whitelist: [],
     blacklist: [],
     checks: {
@@ -152,6 +155,7 @@ async function initExtension() {
 
     setupContextMenus();
     updateActionTitle();
+    await registerBannerScripts();
 }
 
 // Rebuild context menus (and drop language-specific cached infos) whenever the UI language changes
@@ -167,6 +171,7 @@ if (messenger.storage && messenger.storage.onChanged) {
             setupContextMenus();
             updateActionTitle();
         }
+        broadcastBannerRefresh().catch(() => {});
     });
 }
 
@@ -188,6 +193,405 @@ function updateActionTitle() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Persistent per-message evaluation cache, tagging & message display banner
+// ---------------------------------------------------------------------------
+
+const g_EVAL_CACHE_MAX = 3000;
+let g_EVAL_CACHE = null;
+
+/**
+ * Derives a stable cache key for a Thunderbird MessageHeader.
+ * Prefers headerMessageId so results survive folder moves across IMAP/local folders.
+ * @param {object} message
+ * @returns {string|null}
+ */
+function getEvalCacheKey(message) {
+    if (!message) return null;
+    if (message.headerMessageId) {
+        return `h:${message.headerMessageId}`;
+    }
+    if (message.id !== undefined && message.id !== null) {
+        return `m:${message.id}`;
+    }
+    return null;
+}
+
+/**
+ * Lazily hydrates the in-memory evaluation cache map from storage.local.
+ * @returns {Promise<object>}
+ */
+async function loadEvalCache() {
+    if (g_EVAL_CACHE && typeof g_EVAL_CACHE === 'object') {
+        return g_EVAL_CACHE;
+    }
+    if (!messenger.storage || !messenger.storage.local) {
+        g_EVAL_CACHE = {};
+        return g_EVAL_CACHE;
+    }
+    try {
+        const data = await messenger.storage.local.get('messageEvalCache');
+        g_EVAL_CACHE = (data && data.messageEvalCache && typeof data.messageEvalCache === 'object')
+            ? data.messageEvalCache
+            : {};
+    } catch (err) {
+        console.warn('Failed to load messageEvalCache:', err);
+        g_EVAL_CACHE = {};
+    }
+    return g_EVAL_CACHE;
+}
+
+/**
+ * Retrieves the cached Spam Shield evaluation record for a message, if available.
+ * @param {object} message
+ * @returns {Promise<object|null>}
+ */
+async function getCachedEvaluation(message) {
+    const key = getEvalCacheKey(message);
+    if (!key) return null;
+    const cache = await loadEvalCache();
+    return cache[key] || null;
+}
+
+/**
+ * Saves an evaluation record for a message (pruning oldest entries beyond g_EVAL_CACHE_MAX).
+ * @param {object} message
+ * @param {object} evalData
+ */
+async function setCachedEvaluation(message, evalData) {
+    const key = getEvalCacheKey(message);
+    if (!key) return;
+    const cache = await loadEvalCache();
+    cache[key] = evalData;
+
+    const keys = Object.keys(cache);
+    if (keys.length > g_EVAL_CACHE_MAX) {
+        keys.sort((a, b) => (cache[a].timestamp || 0) - (cache[b].timestamp || 0));
+        const removeCount = keys.length - g_EVAL_CACHE_MAX;
+        for (let i = 0; i < removeCount; i++) {
+            delete cache[keys[i]];
+        }
+    }
+
+    if (messenger.storage && messenger.storage.local) {
+        try {
+            await messenger.storage.local.set({ messageEvalCache: cache });
+        } catch (err) {
+            console.warn('Failed to save messageEvalCache:', err);
+        }
+    }
+}
+
+const STATUS_COLORS = {
+    ok: '#15803d',
+    spam: '#b91c1c',
+    dryrun: '#d97706',
+    wl: '#0369a1'
+};
+
+const SPAM_SHIELD_TAG_DEFS = {
+    ok: { key: 'spamshield_ok', color: STATUS_COLORS.ok, i18nKey: 'tag_ok' },
+    spam: { key: 'spamshield_spam', color: STATUS_COLORS.spam, i18nKey: 'tag_spam' },
+    dryrun: { key: 'spamshield_dryrun', color: STATUS_COLORS.dryrun, i18nKey: 'tag_dryrun' },
+    wl: { key: 'spamshield_wl', color: STATUS_COLORS.wl, i18nKey: 'tag_wl' }
+};
+const SPAM_SHIELD_TAG_KEYS = new Set(Object.values(SPAM_SHIELD_TAG_DEFS).map(d => d.key));
+
+/**
+ * Ensures the target Spam Shield tag exists in Thunderbird and assigns it to the message,
+ * removing any outdated Spam Shield tag while preserving all user-defined tags.
+ * @param {number} messageId
+ * @param {object} evalData
+ * @param {object} settings
+ */
+async function applyEvaluationTag(messageId, evalData, settings) {
+    if (!settings || settings.tagEvaluatedMessages === false) {
+        return;
+    }
+    if (!messenger.messages || !messenger.messages.tags || typeof messenger.messages.update !== 'function') {
+        return;
+    }
+    try {
+        let tagSpec = SPAM_SHIELD_TAG_DEFS.ok;
+        if (evalData.whitelisted) {
+            tagSpec = SPAM_SHIELD_TAG_DEFS.wl;
+        } else if (evalData.isSpam) {
+            tagSpec = (evalData.actionTaken === 'dry-run' || settings.dryRun)
+                ? SPAM_SHIELD_TAG_DEFS.dryrun
+                : SPAM_SHIELD_TAG_DEFS.spam;
+        }
+
+        const existingTags = await messenger.messages.tags.list();
+        const foundTag = Array.isArray(existingTags) ? existingTags.find(t => t.key === tagSpec.key) : null;
+        if (!foundTag && typeof messenger.messages.tags.create === 'function') {
+            await messenger.messages.tags.create(tagSpec.key, L(tagSpec.i18nKey), tagSpec.color);
+        }
+
+        const msg = await messenger.messages.get(messageId);
+        const currentTags = Array.isArray(msg && msg.tags) ? msg.tags : [];
+        const cleanedTags = currentTags.filter(k => !SPAM_SHIELD_TAG_KEYS.has(k));
+        cleanedTags.push(tagSpec.key);
+
+        await messenger.messages.update(messageId, { tags: cleanedTags });
+    } catch (err) {
+        console.warn(`Could not apply Spam Shield tag to message ${messageId}:`, err);
+    }
+}
+
+/**
+ * Updates the message_display_action toolbar badge and tooltip for a given tab.
+ * @param {number} tabId
+ * @param {object|null} evalData
+ */
+async function updateMessageDisplayBadge(tabId, evalData) {
+    if (!messenger.messageDisplayAction || !tabId) {
+        return;
+    }
+    try {
+        if (!evalData) {
+            await messenger.messageDisplayAction.setBadgeText({ tabId, text: '' });
+            await messenger.messageDisplayAction.setTitle({ tabId, title: 'Spam Shield' });
+            return;
+        }
+
+        let badgeText = 'OK';
+        let badgeColor = STATUS_COLORS.ok;
+        let titleText = `Spam Shield: ${L('badge_ok')} (${evalData.score})`;
+
+        if (evalData.whitelisted) {
+            badgeText = 'WL';
+            badgeColor = STATUS_COLORS.wl;
+            titleText = `Spam Shield: ${L('pill_whitelist')} (0)`;
+        } else if (evalData.isSpam) {
+            badgeText = evalData.blacklisted ? 'BL' : String(evalData.score).slice(0, 4);
+            badgeColor = evalData.actionTaken === 'dry-run' ? STATUS_COLORS.dryrun : STATUS_COLORS.spam;
+            const modeTag = evalData.actionTaken === 'dry-run' ? L('badge_dryrun') : L('badge_spam');
+            titleText = `Spam Shield: ${modeTag} (${evalData.score})`;
+        } else if (evalData.score < 0) {
+            badgeText = String(evalData.score).slice(0, 4);
+        }
+
+        await messenger.messageDisplayAction.setBadgeText({ tabId, text: badgeText });
+        if (typeof messenger.messageDisplayAction.setBadgeBackgroundColor === 'function') {
+            await messenger.messageDisplayAction.setBadgeBackgroundColor({ tabId, color: badgeColor });
+        }
+        await messenger.messageDisplayAction.setTitle({ tabId, title: titleText });
+    } catch (err) {
+        console.warn(`Failed to update messageDisplayAction badge on tab ${tabId}:`, err);
+    }
+}
+
+let g_BANNER_CSS = null;
+
+/**
+ * Loads message_banner.css from the extension bundle once and caches its text in memory.
+ * Fetching from the privileged extension background context avoids email CSP restrictions.
+ * @returns {Promise<string>}
+ */
+async function loadBannerCss() {
+    if (typeof g_BANNER_CSS === 'string') {
+        return g_BANNER_CSS;
+    }
+    if (!messenger.runtime || typeof messenger.runtime.getURL !== 'function') {
+        return '';
+    }
+    try {
+        const res = await fetch(messenger.runtime.getURL('message_banner.css'));
+        if (res.ok) {
+            g_BANNER_CSS = await res.text();
+            return g_BANNER_CSS;
+        }
+    } catch (err) {
+        console.warn('Could not load message_banner.css:', err);
+    }
+    return '';
+}
+
+/**
+ * Builds the localized data payload sent to message_banner.js inside opened emails.
+ * @param {object|null} message
+ * @param {object} settings
+ * @param {object|null} evaluation
+ * @returns {Promise<object>}
+ */
+async function buildBannerPayload(message, settings, evaluation) {
+    const senderAddress = (message && message.author) || '';
+    const senderEmail = (evaluation && evaluation.senderEmail)
+        || (senderAddress ? await extractEmailFromAuthor(senderAddress) : '');
+    const domain = (evaluation && evaluation.domain)
+        || (senderEmail ? getDomainFromAddress(senderEmail) : (senderAddress ? await extractDomainFromAuthor(senderAddress) : ''));
+    const bannerCss = await loadBannerCss();
+
+    return {
+        showMessageBanner: settings.showMessageBanner !== false,
+        autoCheckOnDisplay: Boolean(settings.autoCheckOnDisplay),
+        bannerCss,
+        emailInfo: { senderEmail: senderEmail || '', domain: domain || '' },
+        evaluation: evaluation || null,
+        strings: {
+            unchecked: L('banner_unchecked'),
+            checking: L('banner_checking'),
+            checkNow: L('banner_check_now'),
+            checkNowTitle: L('banner_check_now_title'),
+            recheckTitle: L('banner_recheck_title'),
+            badgeOk: L('badge_ok'),
+            badgeSpam: L('badge_spam'),
+            badgeDryrun: L('badge_dryrun'),
+            badgeWl: L('pill_whitelist'),
+            pillWhitelist: L('pill_whitelist'),
+            pillBlacklist: L('pill_blacklist'),
+            btnWlMail: L('btn_wl_mail'),
+            btnWlDom: L('btn_wl_dom'),
+            btnBlMail: L('btn_bl_mail'),
+            btnBlDom: L('btn_bl_dom'),
+            btnWlMailTitle: L('btn_wl_mail_title', { email: '{email}' }),
+            btnWlDomTitle: L('btn_wl_dom_title', { pattern: '{pattern}' }),
+            btnBlMailTitle: L('btn_bl_mail_title', { email: '{email}' }),
+            btnBlDomTitle: L('btn_bl_dom_title', { pattern: '{pattern}' })
+        },
+        pillDefs: [
+            ['domainExists', L('pill_domainExists_short')],
+            ['dnssec', L('pill_dnssec')],
+            ['mx', L('pill_mx')],
+            ['spf', L('pill_spf')],
+            ['dkim', L('pill_dkim')],
+            ['dmarc', L('pill_dmarc')],
+            ['domainAge', L('pill_domainAge')],
+            ['dnsbl', L('pill_dnsbl')],
+            ['spfIpMatch', L('pill_spfIpMatch')],
+            ['spamKitFingerprint', L('pill_spamKitFingerprint')]
+        ]
+    };
+}
+
+/**
+ * Registers the MV3 scripting.messageDisplay banner script and injects it into any already-open message tabs.
+ */
+async function registerBannerScripts() {
+    if (!messenger.scripting || !messenger.scripting.messageDisplay) {
+        return;
+    }
+    try {
+        const existing = await messenger.scripting.messageDisplay.getRegisteredScripts({ ids: ['spam-shield-banner'] });
+        if (!Array.isArray(existing) || existing.length === 0) {
+            await messenger.scripting.messageDisplay.registerScripts([
+                {
+                    id: 'spam-shield-banner',
+                    js: ['message_banner.js'],
+                    runAt: 'document_idle'
+                }
+            ]);
+        }
+    } catch (err) {
+        console.warn('Could not register messageDisplay banner script:', err);
+    }
+
+    // Also inject into already open message tabs on install/startup
+    if (messenger.tabs && messenger.messageDisplay && typeof messenger.scripting.executeScript === 'function') {
+        try {
+            const tabs = await messenger.tabs.query({});
+            for (const tab of tabs) {
+                try {
+                    const disp = await messenger.messageDisplay.getDisplayedMessages(tab.id);
+                    if (disp && disp.messages && disp.messages.length > 0) {
+                        await messenger.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['message_banner.js']
+                        }).catch(() => {});
+                        const cached = await getCachedEvaluation(disp.messages[0]);
+                        await updateMessageDisplayBadge(tab.id, cached);
+                    }
+                } catch (_) {
+                    // Tab has no message display
+                }
+            }
+        } catch (err) {
+            console.warn('Could not inspect open tabs during banner init:', err);
+        }
+    }
+}
+
+/**
+ * Pushes a refresh signal and updates toolbar badges across all open message display tabs.
+ */
+async function broadcastBannerRefresh() {
+    if (!messenger.tabs || !messenger.messageDisplay) {
+        return;
+    }
+    try {
+        const tabs = await messenger.tabs.query({});
+        for (const tab of tabs) {
+            try {
+                const disp = await messenger.messageDisplay.getDisplayedMessages(tab.id);
+                if (disp && disp.messages && disp.messages.length > 0) {
+                    const cached = await getCachedEvaluation(disp.messages[0]);
+                    await updateMessageDisplayBadge(tab.id, cached);
+                    await messenger.tabs.sendMessage(tab.id, { type: 'BANNER_REFRESH' }).catch(() => {});
+                } else {
+                    await updateMessageDisplayBadge(tab.id, null);
+                }
+            } catch (_) {
+                // Ignore non-message tabs
+            }
+        }
+    } catch (err) {
+        console.warn('Failed to broadcast banner refresh:', err);
+    }
+}
+
+const g_IN_FLIGHT_EVALS = new Map();
+
+/**
+ * Evaluates a displayed message once, deduplicating concurrent triggers (e.g. from
+ * onMessagesDisplayed and message_banner.js) for the same email.
+ * @param {object} message Thunderbird MessageHeader
+ * @param {object} settings Current settings
+ * @param {string} source Diagnostic log source tag
+ * @returns {Promise<object|null>} Evaluation record
+ */
+async function evaluateDisplayedMessageOnce(message, settings, source = 'message-view') {
+    const key = getEvalCacheKey(message);
+    if (!key) {
+        return null;
+    }
+    if (g_IN_FLIGHT_EVALS.has(key)) {
+        return await g_IN_FLIGHT_EVALS.get(key);
+    }
+    const evalPromise = (async () => {
+        try {
+            const res = await evaluateAndProcessMessage(message, message.folder || null, settings, source);
+            return (res && res.evalRecord) || await getCachedEvaluation(message);
+        } finally {
+            g_IN_FLIGHT_EVALS.delete(key);
+        }
+    })();
+    g_IN_FLIGHT_EVALS.set(key, evalPromise);
+    return await evalPromise;
+}
+
+// Keep the messageDisplayAction toolbar badge synchronized when switching messages
+// and run auto-evaluation if enabled for unscanned emails
+if (messenger.messageDisplay && messenger.messageDisplay.onMessagesDisplayed) {
+    messenger.messageDisplay.onMessagesDisplayed.addListener(async (tab, messageList) => {
+        const msg = messageList && Array.isArray(messageList.messages) && messageList.messages[0];
+        if (!msg) {
+            await updateMessageDisplayBadge(tab.id, null);
+            return;
+        }
+        const cached = await getCachedEvaluation(msg);
+        await updateMessageDisplayBadge(tab.id, cached);
+
+        if (!cached) {
+            const settings = await getSettings();
+            if (settings.autoCheckOnDisplay) {
+                const evalRecord = await evaluateDisplayedMessageOnce(msg, settings, 'auto-display');
+                await updateMessageDisplayBadge(tab.id, evalRecord);
+                await messenger.tabs.sendMessage(tab.id, { type: 'BANNER_REFRESH' }).catch(() => {});
+            }
+        }
+    });
+}
+
 /**
  * Registers context menu entries for folders and message lists in Thunderbird
  */
@@ -203,35 +607,34 @@ function setupContextMenus() {
             contexts: ['folder_pane']
         });
 
+        // Explicit parent item so Thunderbird displays custom colored icons on all submenu children
         messenger.menus.create({
-            id: 'suke-validate-messages',
-            title: L('menu_validate_messages'),
+            id: 'suke-message-parent',
+            title: 'Spam Shield',
             contexts: ['message_list']
         });
 
-        messenger.menus.create({
-            id: 'suke-whitelist-email',
-            title: L('menu_whitelist_email'),
-            contexts: ['message_list']
-        });
+        const scanIcons = { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png' };
+        const wlIcons = { 16: 'icons/wl-16.png', 32: 'icons/wl-32.png' };
+        const blIcons = { 16: 'icons/bl-16.png', 32: 'icons/bl-32.png' };
 
-        messenger.menus.create({
-            id: 'suke-whitelist-domain',
-            title: L('menu_whitelist_domain'),
-            contexts: ['message_list']
-        });
+        const messageMenuItems = [
+            { id: 'suke-validate-messages', title: L('menu_validate_messages'), icons: scanIcons },
+            { id: 'suke-whitelist-email', title: L('menu_whitelist_email'), icons: wlIcons },
+            { id: 'suke-whitelist-domain', title: L('menu_whitelist_domain'), icons: wlIcons },
+            { id: 'suke-blacklist-email', title: L('menu_blacklist_email'), icons: blIcons },
+            { id: 'suke-blacklist-domain', title: L('menu_blacklist_domain'), icons: blIcons }
+        ];
 
-        messenger.menus.create({
-            id: 'suke-blacklist-email',
-            title: L('menu_blacklist_email'),
-            contexts: ['message_list']
-        });
-
-        messenger.menus.create({
-            id: 'suke-blacklist-domain',
-            title: L('menu_blacklist_domain'),
-            contexts: ['message_list']
-        });
+        for (const item of messageMenuItems) {
+            messenger.menus.create({
+                id: item.id,
+                parentId: 'suke-message-parent',
+                title: item.title,
+                icons: item.icons,
+                contexts: ['message_list']
+            });
+        }
     }).catch(err => console.warn('Failed to create context menus:', err));
 }
 
@@ -249,6 +652,7 @@ async function addPatternsToList(listType, patterns) {
         await messenger.storage.local.set({ settings: current });
     }
     notifyUI({ type: 'SETTINGS_UPDATED', settings: current });
+    broadcastBannerRefresh().catch(() => {});
     return current;
 }
 
@@ -530,8 +934,6 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
                     ? L('act_blacklist_dryrun', { rule: result.matchedRule })
                     : L('act_spam_dryrun');
             } else {
-                console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
-                await markAndMoveToSpam(message, targetFolder);
                 actionTaken = 'moved';
                 actionLabel = result.blacklisted
                     ? L('act_blacklist_moved', { rule: result.matchedRule })
@@ -539,9 +941,31 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             }
         }
 
+        const evalRecord = {
+            score,
+            threshold: settings.spamThreshold,
+            isSpam,
+            whitelisted: Boolean(result.whitelisted),
+            blacklisted: Boolean(result.blacklisted),
+            matchedRule: result.matchedRule || null,
+            actionTaken,
+            senderEmail: senderEmail || '',
+            domain,
+            timestamp: Date.now(),
+            checks
+        };
+
+        await setCachedEvaluation(message, evalRecord);
+        await applyEvaluationTag(message.id, evalRecord, settings);
+
+        if (isSpam && !settings.dryRun) {
+            console.log(`[SPAM] Marking message from ${message.author} (score: ${score}) as Junk and moving to Spam folder.`);
+            await markAndMoveToSpam(message, targetFolder);
+        }
+
         await appendDiagnosticLog({
             id: `${Date.now()}-${message.id}-${Math.random().toString(36).slice(2, 6)}`,
-            timestamp: Date.now(),
+            timestamp: evalRecord.timestamp,
             messageId: message.id,
             author: senderAddress,
             senderEmail: senderEmail || '',
@@ -557,7 +981,7 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             checks
         }, settings.maxLogEntries);
 
-        return { isSpam, score };
+        return { isSpam, score, evalRecord };
     } catch (error) {
         console.error(`ERROR Validating ${message.author}:[${message.subject}] (messageID: ${message.id}...):`, error);
         await appendDiagnosticLog({
@@ -663,6 +1087,7 @@ async function scanMessageList(msgList, folder = null, source = 'message-scan') 
     } finally {
         g_SCAN_STATE.running = false;
         notifyUI({ type: 'SCAN_COMPLETE', scanState: g_SCAN_STATE });
+        broadcastBannerRefresh().catch(() => {});
     }
 
     return {
@@ -1959,13 +2384,67 @@ async function getAllFoldersList() {
  * Handles messages from Popup and Options/Diagnostics pages
  */
 if (messenger.runtime && messenger.runtime.onMessage) {
-    messenger.runtime.onMessage.addListener(async (request) => {
+    messenger.runtime.onMessage.addListener(async (request, sender) => {
         if (!request || !request.action) {
             return null;
         }
 
         try {
             switch (request.action) {
+                case 'GET_DISPLAYED_EVALUATION': {
+                    if (!sender || !sender.tab || !messenger.messageDisplay) {
+                        return { showMessageBanner: false };
+                    }
+                    const settings = await getSettings();
+                    const list = await messenger.messageDisplay.getDisplayedMessages(sender.tab.id);
+                    const msg = list && Array.isArray(list.messages) && list.messages[0];
+                    if (!msg) {
+                        await updateMessageDisplayBadge(sender.tab.id, null);
+                        return { showMessageBanner: false };
+                    }
+                    const cached = await getCachedEvaluation(msg);
+                    await updateMessageDisplayBadge(sender.tab.id, cached);
+                    return await buildBannerPayload(msg, settings, cached);
+                }
+
+                case 'EVALUATE_DISPLAYED_MESSAGE': {
+                    if (!sender || !sender.tab || !messenger.messageDisplay) {
+                        return { error: L('err_mailtabs_unavail') };
+                    }
+                    const settings = await getSettings();
+                    const list = await messenger.messageDisplay.getDisplayedMessages(sender.tab.id);
+                    const msg = list && Array.isArray(list.messages) && list.messages[0];
+                    if (!msg) {
+                        return { error: L('err_no_selected_msgs') };
+                    }
+                    const evalRecord = await evaluateDisplayedMessageOnce(msg, settings, 'message-view');
+                    await updateMessageDisplayBadge(sender.tab.id, evalRecord);
+                    return await buildBannerPayload(msg, settings, evalRecord);
+                }
+
+                case 'HEADER_RULE_ACTION': {
+                    const listType = request.listType === 'whitelist' ? 'whitelist' : 'blacklist';
+                    const pattern = String(request.pattern || '').trim().toLowerCase();
+                    if (!pattern) {
+                        return { error: L('err_invalid_list_pattern') };
+                    }
+                    const updatedSettings = await addPatternsToList(listType, [pattern]);
+                    if (sender && sender.tab && messenger.messageDisplay) {
+                        const list = await messenger.messageDisplay.getDisplayedMessages(sender.tab.id);
+                        const msg = list && Array.isArray(list.messages) && list.messages[0];
+                        if (msg) {
+                            if (listType === 'whitelist' && typeof messenger.messages.update === 'function') {
+                                await messenger.messages.update(msg.id, { junk: false }).catch(() => {});
+                            }
+                            const res = await evaluateAndProcessMessage(msg, msg.folder || null, updatedSettings, 'header-action');
+                            const evalRecord = (res && res.evalRecord) || await getCachedEvaluation(msg);
+                            await updateMessageDisplayBadge(sender.tab.id, evalRecord);
+                            return await buildBannerPayload(msg, updatedSettings, evalRecord);
+                        }
+                    }
+                    return { success: true };
+                }
+
                 case 'GET_STATE': {
                     const settings = await getSettings();
                     const logData = messenger.storage ? await messenger.storage.local.get('diagnosticLog') : {};

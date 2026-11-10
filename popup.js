@@ -45,8 +45,7 @@ async function sendToBackground(payload) {
  * @param {boolean} [isError=false] Whether the status represents an error (styled in danger color).
  */
 function showStatus(text, isError = false) {
-    statusMsg.style.display = 'block';
-    statusMsg.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+    statusMsg.className = isError ? 'status-msg visible text-danger' : 'status-msg visible muted';
     statusMsg.textContent = text;
 }
 
@@ -175,28 +174,26 @@ function createPopupLogItem(entry, localeCode) {
 
     // 2. Subject line
     const subjDiv = document.createElement('div');
-    subjDiv.className = 'truncate muted';
-    subjDiv.style.fontSize = '11.5px';
+    subjDiv.className = 'truncate muted popup-log-subj';
     subjDiv.title = entry.subject || '';
     subjDiv.textContent = entry.subject || '';
 
     // 3. Meta row: individual check pill badges + folder name and timestamp
     const metaRow = document.createElement('div');
-    metaRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:6px; margin-top:2px;';
+    metaRow.className = 'popup-log-meta-row';
     const pillsDiv = document.createElement('div');
     pillsDiv.className = 'check-pills';
     pillsDiv.append(...buildCheckPills(entry.checks, currentLang));
 
     const timeStr = new Date(entry.timestamp).toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const metaSpan = document.createElement('span');
-    metaSpan.className = 'muted';
-    metaSpan.style.cssText = 'font-size:10.5px; white-space:nowrap;';
+    metaSpan.className = 'muted popup-log-meta-time';
     metaSpan.textContent = `${entry.folderName || ''} · ${timeStr}`;
     metaRow.append(pillsDiv, metaSpan);
 
     // 4. Quick action buttons: Whitelist / Blacklist for specific email and wildcard domain
     const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex; justify-content:flex-end; gap:4px; margin-top:2px;';
+    btnRow.className = 'popup-log-actions';
 
     const email = entry.senderEmail || getEmailFromAuthorString(entry.author);
     const rootDom = getRegistrableDomain(entry.domain) || (entry.domain !== '(unbekannt)' && entry.domain !== '(unknown)' && entry.domain !== '-' ? entry.domain : '');
@@ -255,8 +252,7 @@ function createPopupLogItem(entry, localeCode) {
 function renderPopupLog(log) {
     if (!Array.isArray(log) || log.length === 0) {
         const emptyDiv = document.createElement('div');
-        emptyDiv.className = 'muted';
-        emptyDiv.style.cssText = 'padding:16px; text-align:center;';
+        emptyDiv.className = 'muted empty-state';
         emptyDiv.textContent = t('popup_empty_log', {}, currentLang);
         popupLogList.replaceChildren(emptyDiv);
         logSummary.textContent = t('popup_log_summary_zero', {}, currentLang);

@@ -82,7 +82,32 @@
           <input type="number" id="maxLogEntries" step="10" min="10" max="1000" value="100">
         </div>
 
+        <div class="form-row">
+          <div>
+            <label for="showMessageBanner" data-i18n="opt_show_banner_label">Badges &amp; Quick-Buttons in geöffneten E-Mails anzeigen</label>
+            <span class="hint" data-i18n="opt_show_banner_hint">Blendet oben in der geöffneten E-Mail die Prüfergebnisse (DNS, SPF, DMARC, DNSBL…) und Whitelist/Blacklist-Buttons ein.</span>
+          </div>
+          <input type="checkbox" id="showMessageBanner">
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label for="autoCheckOnDisplay" data-i18n="opt_auto_check_display_label">Ungeprüfte E-Mails beim Öffnen automatisch prüfen</label>
+            <span class="hint" data-i18n="opt_auto_check_display_hint">Wenn aktiv, wird beim Öffnen einer noch nicht geprüften E-Mail sofort ein Scan gestartet. Wenn aus, erscheint stattdessen ein „Prüfen“-Button.</span>
+          </div>
+          <input type="checkbox" id="autoCheckOnDisplay">
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label for="tagEvaluatedMessages" data-i18n="opt_tag_messages_label">Score &amp; Status als Thunderbird-Schlagwort (Tag) setzen</label>
+            <span class="hint" data-i18n-html="opt_tag_messages_hint">Heftet geprüften E-Mails ein farbiges Schlagwort an (z. B. <em>Spam Shield: OK</em> / <em>Spam</em>), sichtbar in der Thunderbird-Spalte „Schlagworte“.</span>
+          </div>
+          <input type="checkbox" id="tagEvaluatedMessages">
+        </div>
+
         <h3 style="font-size:13px; margin:14px 0 6px;" data-i18n="opt_checks_heading">Einzelne DNS-, Reputations- &amp; Authentifizierungs-Prüfungen</h3>
+        <div class="settings-table-wrap">
         <table class="settings-table">
           <thead>
             <tr>
@@ -173,7 +198,7 @@
               <td>
                 <strong data-i18n="chk8_title">8. DNS-Blacklist (Domain &amp; Server-IP)</strong>
                 <div class="muted" style="font-size:11px;" data-i18n="chk8_desc">Prüft Domain und Einlieferungs-/A-Record-IP gegen konfigurierte DNS-Blacklists.</div>
-                <div class="dnsbl-providers-list" style="margin-top: 6px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; font-size: 11px;">
+                <div class="dnsbl-providers-list" style="margin-top: 6px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px; font-size: 11px;">
                   <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="chk8_prov_nordspam_title">
                     <input type="checkbox" id="chk_dnsbl_prov_nordspam"> <span data-i18n="chk8_prov_nordspam">Nordspam (Domain &amp; IP)</span>
                   </label>
@@ -221,6 +246,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
 
         <div class="btn-row" style="margin-top:14px;">
           <button id="saveSettingsBtn" class="btn-primary" data-i18n="opt_save_btn">💾 Einstellungen speichern</button>
@@ -238,7 +264,7 @@
 
           <div style="display:flex; flex-direction:column; gap:10px;">
             <div class="btn-row">
-              <select id="folderSelect" style="flex:1; min-width:200px;">
+              <select id="folderSelect" style="flex:1; min-width:140px;">
                 <option value="" data-i18n="opt_folders_loading">Ordner werden geladen…</option>
               </select>
               <button id="scanSelectedFolderBtn" class="btn-primary" data-i18n="opt_scan_selected_folder_btn">▶️ Ausgewählten Ordner prüfen</button>
