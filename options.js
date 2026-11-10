@@ -30,6 +30,9 @@ const DEFAULT_SETTINGS = {
     dryRun: false,
     monitorAllFolders: true,
     maxLogEntries: 100,
+    showMessageBanner: true,
+    autoCheckOnDisplay: false,
+    tagEvaluatedMessages: true,
     whitelist: [],
     blacklist: [],
     checks: {
@@ -122,6 +125,9 @@ const spamThresholdInput = document.getElementById('spamThreshold');
 const dryRunInput = document.getElementById('dryRun');
 const monitorAllFoldersInput = document.getElementById('monitorAllFolders');
 const maxLogEntriesInput = document.getElementById('maxLogEntries');
+const showMessageBannerInput = document.getElementById('showMessageBanner');
+const autoCheckOnDisplayInput = document.getElementById('autoCheckOnDisplay');
+const tagEvaluatedMessagesInput = document.getElementById('tagEvaluatedMessages');
 const currentModeBadge = document.getElementById('currentModeBadge');
 const saveStatus = document.getElementById('saveStatus');
 const clearCacheBtn = document.getElementById('clearCacheBtn');
@@ -390,8 +396,7 @@ function renderRuleLists(settings) {
 
     if (wl.length === 0) {
         const span = document.createElement('span');
-        span.className = 'muted';
-        span.style.fontSize = '11.5px';
+        span.className = 'muted text-md';
         span.textContent = tr('opt_wl_empty');
         whitelistChips.replaceChildren(span);
     } else {
@@ -415,8 +420,7 @@ function renderRuleLists(settings) {
 
     if (bl.length === 0) {
         const span = document.createElement('span');
-        span.className = 'muted';
-        span.style.fontSize = '11.5px';
+        span.className = 'muted text-md';
         span.textContent = tr('opt_bl_empty');
         blacklistChips.replaceChildren(span);
     } else {
@@ -501,6 +505,9 @@ function populateSettingsForm(settings) {
     dryRunInput.checked = Boolean(merged.dryRun);
     monitorAllFoldersInput.checked = merged.monitorAllFolders !== false;
     maxLogEntriesInput.value = merged.maxLogEntries ?? 100;
+    if (showMessageBannerInput) showMessageBannerInput.checked = merged.showMessageBanner !== false;
+    if (autoCheckOnDisplayInput) autoCheckOnDisplayInput.checked = Boolean(merged.autoCheckOnDisplay);
+    if (tagEvaluatedMessagesInput) tagEvaluatedMessagesInput.checked = merged.tagEvaluatedMessages !== false;
 
     const checks = merged.checks || {};
     for (const [key, fields] of Object.entries(chkFields)) {
@@ -578,6 +585,9 @@ function collectSettingsFromForm() {
         dryRun: dryRunInput.checked,
         monitorAllFolders: monitorAllFoldersInput.checked,
         maxLogEntries: Math.max(10, Number(maxLogEntriesInput.value) || 100),
+        showMessageBanner: showMessageBannerInput ? showMessageBannerInput.checked : true,
+        autoCheckOnDisplay: autoCheckOnDisplayInput ? autoCheckOnDisplayInput.checked : false,
+        tagEvaluatedMessages: tagEvaluatedMessagesInput ? tagEvaluatedMessagesInput.checked : true,
         whitelist: Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [],
         blacklist: Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [],
         checks
@@ -695,7 +705,7 @@ function createDiagnosticRow(entry, localeCode) {
 
     // Col 1: Time & Date
     const tdTime = document.createElement('td');
-    tdTime.style.whiteSpace = 'nowrap';
+    tdTime.className = 'nowrap';
     const dt = new Date(entry.timestamp);
     const timeStr = dt.toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const dateStr = dt.toLocaleDateString(localeCode);
@@ -704,8 +714,7 @@ function createDiagnosticRow(entry, localeCode) {
     strongTime.textContent = timeStr;
     dTime.appendChild(strongTime);
     const dDate = document.createElement('div');
-    dDate.className = 'muted';
-    dDate.style.fontSize = '10.5px';
+    dDate.className = 'muted text-xs';
     dDate.textContent = dateStr;
     tdTime.append(dTime, dDate);
 
@@ -716,8 +725,7 @@ function createDiagnosticRow(entry, localeCode) {
     strongFold.textContent = entry.folderName || '';
     dFold.appendChild(strongFold);
     const dSrc = document.createElement('div');
-    dSrc.className = 'muted';
-    dSrc.style.fontSize = '11px';
+    dSrc.className = 'muted text-sm';
     dSrc.textContent = formatSourceLabel(entry.source);
     tdFolder.append(dFold, dSrc);
 
@@ -728,15 +736,14 @@ function createDiagnosticRow(entry, localeCode) {
     strongDom.textContent = entry.domain || '';
     dDom.appendChild(strongDom);
     const dAuth = document.createElement('div');
-    dAuth.className = 'muted truncate';
-    dAuth.style.cssText = 'font-size:11px; max-width:210px;';
+    dAuth.className = 'muted truncate diag-auth';
     dAuth.title = entry.author || '';
     dAuth.textContent = entry.author || '';
     tdDom.append(dDom, dAuth);
 
     // Col 4: Subject
     const tdSubj = document.createElement('td');
-    tdSubj.style.maxWidth = '260px';
+    tdSubj.className = 'diag-subj';
     const dSubj = document.createElement('div');
     dSubj.title = entry.subject || '';
     dSubj.textContent = entry.subject || '';
@@ -744,19 +751,17 @@ function createDiagnosticRow(entry, localeCode) {
 
     // Col 5: Check pills
     const tdChecks = document.createElement('td');
-    tdChecks.style.minWidth = '440px';
+    tdChecks.className = 'diag-checks';
     tdChecks.appendChild(buildCheckPillsElement(entry.checks));
 
     // Col 6: Score
     const tdScore = document.createElement('td');
-    tdScore.style.whiteSpace = 'nowrap';
+    tdScore.className = 'nowrap';
     const strongScore = document.createElement('strong');
-    strongScore.style.fontSize = '13px';
-    strongScore.style.color = entry.isSpam ? 'var(--danger)' : 'var(--success)';
+    strongScore.className = entry.isSpam ? 'diag-score-val text-danger' : 'diag-score-val text-success';
     strongScore.textContent = String(entry.score);
     const spanThresh = document.createElement('span');
-    spanThresh.className = 'muted';
-    spanThresh.style.fontSize = '11px';
+    spanThresh.className = 'muted text-sm';
     spanThresh.textContent = ` / ${entry.threshold}`;
     tdScore.append(strongScore, spanThresh);
 
@@ -860,8 +865,7 @@ function renderDiagnosticTable() {
         const emptyTr = document.createElement('tr');
         const emptyTd = document.createElement('td');
         emptyTd.colSpan = 8;
-        emptyTd.className = 'muted';
-        emptyTd.style.cssText = 'text-align:center; padding:24px;';
+        emptyTd.className = 'muted empty-table-cell';
         emptyTd.textContent = tr(emptyKey);
         emptyTr.appendChild(emptyTd);
         diagTableBody.replaceChildren(emptyTr);
@@ -1142,16 +1146,16 @@ diagTableBody.addEventListener('contextmenu', (e) => {
     ctxMenuTarget = { email, domainPattern };
     ctxMenuHeader.textContent = email ? `${email} (${domainPattern})` : domainPattern;
 
-    ctxWlEmail.style.display = email ? 'flex' : 'none';
+    ctxWlEmail.classList.toggle('hidden', !email);
     ctxWlEmail.textContent = tr('ctx_wl_email', { email });
 
-    ctxWlDomain.style.display = domainPattern ? 'flex' : 'none';
+    ctxWlDomain.classList.toggle('hidden', !domainPattern);
     ctxWlDomain.textContent = tr('ctx_wl_domain', { domain: domainPattern });
 
-    ctxBlEmail.style.display = email ? 'flex' : 'none';
+    ctxBlEmail.classList.toggle('hidden', !email);
     ctxBlEmail.textContent = tr('ctx_bl_email', { email });
 
-    ctxBlDomain.style.display = domainPattern ? 'flex' : 'none';
+    ctxBlDomain.classList.toggle('hidden', !domainPattern);
     ctxBlDomain.textContent = tr('ctx_bl_domain', { domain: domainPattern });
 
     // Approximate menu dimensions used to keep the menu fully visible near the window edges
@@ -1246,7 +1250,7 @@ runDomainTestBtn.addEventListener('click', async () => {
     const dkimHeader = testDkimInput.value.trim();
     if (!input) {
         const span = document.createElement('span');
-        span.style.color = 'var(--danger)';
+        span.className = 'text-danger';
         span.textContent = tr('opt_tester_empty_err');
         domainTestOutput.replaceChildren(span);
         return;
@@ -1264,7 +1268,7 @@ runDomainTestBtn.addEventListener('click', async () => {
     });
     if (!res || res.error) {
         const spanErr = document.createElement('span');
-        spanErr.style.color = 'var(--danger)';
+        spanErr.className = 'text-danger';
         spanErr.textContent = tr('toast_err', { error: (res && res.error) || tr('bg_not_reachable') });
         domainTestOutput.replaceChildren(spanErr);
         return;
@@ -1275,10 +1279,10 @@ runDomainTestBtn.addEventListener('click', async () => {
         : (res.blacklisted ? `BLACKLIST (${res.matchedRule})` : (res.isSpam ? tr('opt_tester_status_spam') : tr('opt_tester_status_ok')));
 
     const card = document.createElement('div');
-    card.style.cssText = 'padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px;';
+    card.className = 'tester-card';
 
     const cardHeader = document.createElement('div');
-    cardHeader.style.cssText = 'display:flex; justify-content:space-between; align-items:center;';
+    cardHeader.className = 'tester-card-header';
 
     const strongTitle = document.createElement('strong');
     strongTitle.textContent = `Domain: ${res.domain}${res.senderEmail ? ` (${res.senderEmail})` : ''}`;

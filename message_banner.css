@@ -1,0 +1,192 @@
+/*
+ * Isolated Shadow DOM stylesheet for Spam Shield's in-email message header banner.
+ * Loaded by background.js via runtime.getURL('message_banner.css') and applied inside Shadow DOM
+ * so external email HTML styles cannot interfere with banner layout or colors.
+ */
+:host {
+    display: block;
+    margin: 6px 8px 10px 8px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 12px;
+    line-height: 1.35;
+    color: #1e293b;
+    --ss-bg: #f8fafc;
+    --ss-border: #cbd5e1;
+    --ss-muted: #64748b;
+    --ss-btn-bg: #ffffff;
+    --ss-btn-border: #cbd5e1;
+    --ss-btn-hover: #f1f5f9;
+    --ss-ok-bg: #dcfce7;
+    --ss-ok-fg: #166534;
+    --ss-ok-bd: #86efac;
+    --ss-fail-bg: #fee2e2;
+    --ss-fail-fg: #991b1b;
+    --ss-fail-bd: #fca5a5;
+    --ss-warn-bg: #fef3c7;
+    --ss-warn-fg: #92400e;
+    --ss-warn-bd: #fcd34d;
+    --ss-wl-bg: #dbeafe;
+    --ss-wl-fg: #1e40af;
+    --ss-wl-bd: #93c5fd;
+    --ss-off-bg: #f1f5f9;
+    --ss-off-fg: #64748b;
+    --ss-off-bd: #e2e8f0;
+}
+
+@media (prefers-color-scheme: dark) {
+    :host {
+        color: #e2e8f0;
+        --ss-bg: #1e293b;
+        --ss-border: #334155;
+        --ss-muted: #94a3b8;
+        --ss-btn-bg: #0f172a;
+        --ss-btn-border: #475569;
+        --ss-btn-hover: #334155;
+        --ss-ok-bg: rgba(22, 101, 52, 0.35);
+        --ss-ok-fg: #86efac;
+        --ss-ok-bd: rgba(134, 239, 172, 0.45);
+        --ss-fail-bg: rgba(153, 27, 27, 0.38);
+        --ss-fail-fg: #fca5a5;
+        --ss-fail-bd: rgba(252, 165, 165, 0.45);
+        --ss-warn-bg: rgba(146, 64, 14, 0.38);
+        --ss-warn-fg: #fcd34d;
+        --ss-warn-bd: rgba(252, 211, 77, 0.45);
+        --ss-wl-bg: rgba(30, 64, 175, 0.38);
+        --ss-wl-fg: #93c5fd;
+        --ss-wl-bd: rgba(147, 197, 253, 0.45);
+        --ss-off-bg: rgba(51, 65, 85, 0.45);
+        --ss-off-fg: #94a3b8;
+        --ss-off-bd: #475569;
+    }
+}
+
+.ss-card {
+    background: var(--ss-bg);
+    border: 1px solid var(--ss-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    box-sizing: border-box;
+}
+
+.ss-row-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.ss-left {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.ss-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+
+.ss-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.ss-status-badge.ok { background: var(--ss-ok-bg); color: var(--ss-ok-fg); border-color: var(--ss-ok-bd); }
+.ss-status-badge.spam { background: var(--ss-fail-bg); color: var(--ss-fail-fg); border-color: var(--ss-fail-bd); }
+.ss-status-badge.dryrun { background: var(--ss-warn-bg); color: var(--ss-warn-fg); border-color: var(--ss-warn-bd); }
+.ss-status-badge.wl { background: var(--ss-wl-bg); color: var(--ss-wl-fg); border-color: var(--ss-wl-bd); }
+.ss-status-badge.unchecked { background: var(--ss-off-bg); color: var(--ss-off-fg); border-color: var(--ss-off-bd); }
+
+.ss-sender {
+    color: var(--ss-muted);
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+}
+
+.ss-btn {
+    appearance: none;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--ss-btn-border);
+    background: var(--ss-btn-bg);
+    color: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.12s ease;
+}
+
+.ss-btn:hover:not(:disabled) {
+    background: var(--ss-btn-hover);
+}
+
+.ss-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.ss-btn.wl {
+    color: var(--ss-ok-fg);
+    border-color: var(--ss-ok-bd);
+    background: var(--ss-ok-bg);
+}
+
+.ss-btn.bl {
+    color: var(--ss-fail-fg);
+    border-color: var(--ss-fail-bd);
+    background: var(--ss-fail-bg);
+}
+
+.ss-btn.primary {
+    color: var(--ss-wl-fg);
+    border-color: var(--ss-wl-bd);
+    background: var(--ss-wl-bg);
+}
+
+.ss-row-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.ss-pill {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    cursor: help;
+    white-space: nowrap;
+}
+
+.ss-pill.pass { background: var(--ss-ok-bg); color: var(--ss-ok-fg); border-color: var(--ss-ok-bd); }
+.ss-pill.fail { background: var(--ss-fail-bg); color: var(--ss-fail-fg); border-color: var(--ss-fail-bd); }
+.ss-pill.off { background: var(--ss-off-bg); color: var(--ss-off-fg); border-color: var(--ss-off-bd); }
+
+.ss-err {
+    color: var(--ss-fail-fg);
+    font-size: 11px;
+    margin-top: 4px;
+}
+
