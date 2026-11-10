@@ -1,0 +1,27 @@
+<strong>Spam Shield</strong> protects your Thunderbird mailbox against sophisticated spam, phishing, and disposable domain abuse using a multi-tiered <abbr title="DNS over HTTPS">DoH</abbr> heuristics engine.
+
+<blockquote>Traditional spam filters increasingly fail against automated disposable domains: Spammers register thousands of domains daily with seemingly valid SPF and DKIM records. Spam Shield detects these generator patterns through in-depth DNS and header analysis.</blockquote>
+
+<strong>10-Tier Inspection Engine:</strong>
+<ol>
+  <li><strong>Domain Existence:</strong> Verifies that the sender domain actually exists in DNS (no <code>NXDOMAIN</code>).</li>
+  <li><strong>DNSSEC Signature:</strong> Validates cryptographic authentication via <abbr title="Domain Name System Security Extensions">DNSSEC</abbr> (<code>AD</code> flag).</li>
+  <li><strong>MX Record:</strong> Verifies whether the sender domain publishes active mail exchange records.</li>
+  <li><strong>SPF Record:</strong> Checks for a valid <code>v=spf1</code> TXT record in DNS.</li>
+  <li><strong>DKIM Signature &amp; Key:</strong> Validates cryptographic email signatures and public keys (<code>_domainkey</code>).</li>
+  <li><strong>DMARC Policy:</strong> Detects missing policies or un-enforced <code>p=none</code> settings.</li>
+  <li><strong>Domain Age (<abbr title="Registration Data Access Protocol">RDAP</abbr>):</strong> Identifies newly registered disposable domains (younger than e.g. 90 days) via the authoritative IANA bootstrap registry.</li>
+  <li><strong>Modular DNS Blacklists (<abbr title="DNS-based Blackhole List">DNSBL</abbr>):</strong> Checks domains and connecting IPs against reputation lists (<em>Nordspam</em>, <em>Spamhaus DBL</em>, <em>SpamCop</em>, <em>NiX Spam / manitu</em>, <em>0spam</em>, <em>DroneBL</em>), with customizable provider toggles and a configurable minimum hit threshold.</li>
+  <li><strong>SPF Sender IP Match:</strong> Validates the real sending MTA IP from <code>Received</code> headers against authorized SPF mechanisms.</li>
+  <li><strong>Spam-Kit Fingerprint:</strong> Detects automated domain templates (Self-MX <code>10 &lt;domain&gt;</code>, raw-IP SPF, boilerplate DMARC, snowshoe subnets).</li>
+</ol>
+
+<strong>Key Features:</strong>
+<ul>
+  <li><strong>Native Thunderbird Context Menus:</strong> Scan entire folders or selected emails directly via right-click.</li>
+  <li><strong>1-Click Whitelist &amp; Blacklist:</strong> Whitelist or blacklist individual senders or entire domains (with wildcard <code>*.domain.com</code> support).</li>
+  <li><strong>Evaluation Mode (Dry-Run):</strong> Safely test and evaluate scoring without moving any emails.</li>
+  <li><strong>Live Diagnostics Dashboard:</strong> In-depth hover tooltips for every check, log search/filters, and an interactive domain tester.</li>
+  <li><strong>Privacy &amp; Full Control:</strong> All penalty scores and thresholds are fully customizable. No third-party tracking — queries are executed directly and encrypted via DoH.</li>
+</ul>
+
