@@ -2,6 +2,31 @@
 
 All notable changes to **Spam Shield** are documented in this file.
 
+## [1.8] - 2026-11-13
+
+### Added
+- **Whitelist & Blacklist Import / Export (`options.html`, `options.js`, `background.js`):**
+  - Added individual **Export JSON** and **Export CSV** actions for Whitelist, Blacklist, and **Both Lists (Combined)**.
+  - Added individual **Import (JSON/CSV)** and **Import Both** actions with strict list-type validation:
+    - JSON exports include explicit `whitelist` / `blacklist` object keys; CSV exports include explicit `#WHITELIST` / `#BLACKLIST` section headers.
+    - Unmarked files or files containing only the opposite list are rejected with an error to prevent accidental cross-imports (e.g. importing a Blacklist as a Whitelist).
+    - Loading a combined file via single-list import only imports the matching list and displays a notice.
+  - **Smart Domain Subsumption on Merge:** Adding or importing a domain rule (e.g. `*.email.com`) automatically replaces existing email-specific entries for the same domain (e.g. `some-name@email.com`).
+- **Clear Whitelist / Blacklist with Confirmation:**
+  - Added **Clear** buttons for both Whitelist and Blacklist with a confirmation prompt showing the entry count before deletion.
+- **Move Whitelisted Emails from Spam to Inbox (`moveWhitelistedToInbox`, default: enabled):**
+  - Added an option to automatically clear the Junk flag and move whitelisted messages back to the Inbox — strictly only when the message is currently located in a Spam/Junk folder.
+- **Live Diagnostics Improvements (`options.html`, `options.js`, `background.js`):**
+  - **Open Email:** Double-clicking any row in Live Diagnostics or choosing **Open Email** from its right-click context menu opens the message directly in Thunderbird (`messageDisplay.open`), using `headerMessageId` as a fallback if the message was moved.
+  - **Score Filter:** Added a max-score numeric filter (`Score < …`) to show only emails scoring below the entered threshold.
+  - **Whitelist & Blacklist Filters:** Added *Whitelist matches only* and *Blacklist matches only* filter options to the Live Diagnostics status dropdown.
+
+### Changed
+- **Safer Out-of-the-Box Defaults for New Installations:**
+  - Enabled **Dry-Run Mode** (`dryRun: true`) by default so new users can evaluate results before emails are moved to Junk.
+  - Increased **DNSBL Minimum Hits** (`checks.dnsbl.minHits`) default from `1` to `2` to reduce false positives from single-blocklist hits.
+  - Existing users keep their previously saved settings in `storage.local`.
+
 ## [1.7] - 2026-11-10
 
 ### Added

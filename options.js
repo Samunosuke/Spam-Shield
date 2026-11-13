@@ -27,12 +27,13 @@
 const DEFAULT_SETTINGS = {
     language: 'auto',
     spamThreshold: -50,
-    dryRun: false,
+    dryRun: true,
     monitorAllFolders: true,
     maxLogEntries: 100,
     showMessageBanner: true,
     autoCheckOnDisplay: false,
     tagEvaluatedMessages: true,
+    moveWhitelistedToInbox: true,
     whitelist: [],
     blacklist: [],
     checks: {
@@ -46,7 +47,7 @@ const DEFAULT_SETTINGS = {
         dnsbl: {
             enabled: true,
             score: -80,
-            minHits: 1,
+            minHits: 2,
             providers: {
                 nordspam: true,
                 spamhaus: true,
@@ -128,6 +129,7 @@ const maxLogEntriesInput = document.getElementById('maxLogEntries');
 const showMessageBannerInput = document.getElementById('showMessageBanner');
 const autoCheckOnDisplayInput = document.getElementById('autoCheckOnDisplay');
 const tagEvaluatedMessagesInput = document.getElementById('tagEvaluatedMessages');
+const moveWhitelistedToInboxInput = document.getElementById('moveWhitelistedToInbox');
 const currentModeBadge = document.getElementById('currentModeBadge');
 const saveStatus = document.getElementById('saveStatus');
 const clearCacheBtn = document.getElementById('clearCacheBtn');
@@ -201,11 +203,27 @@ const whitelistInput = document.getElementById('whitelistInput');
 const addWhitelistBtn = document.getElementById('addWhitelistBtn');
 const whitelistChips = document.getElementById('whitelistChips');
 const whitelistCount = document.getElementById('whitelistCount');
+const exportWhitelistJsonBtn = document.getElementById('exportWhitelistJsonBtn');
+const exportWhitelistCsvBtn = document.getElementById('exportWhitelistCsvBtn');
+const importWhitelistBtn = document.getElementById('importWhitelistBtn');
+const clearWhitelistBtn = document.getElementById('clearWhitelistBtn');
 
 const blacklistInput = document.getElementById('blacklistInput');
 const addBlacklistBtn = document.getElementById('addBlacklistBtn');
 const blacklistChips = document.getElementById('blacklistChips');
 const blacklistCount = document.getElementById('blacklistCount');
+const exportBlacklistJsonBtn = document.getElementById('exportBlacklistJsonBtn');
+const exportBlacklistCsvBtn = document.getElementById('exportBlacklistCsvBtn');
+const importBlacklistBtn = document.getElementById('importBlacklistBtn');
+const clearBlacklistBtn = document.getElementById('clearBlacklistBtn');
+
+const exportBothJsonBtn = document.getElementById('exportBothJsonBtn');
+const exportBothCsvBtn = document.getElementById('exportBothCsvBtn');
+const importBothBtn = document.getElementById('importBothBtn');
+const listTransferStatus = document.getElementById('listTransferStatus');
+const ruleImportFileInput = document.getElementById('ruleImportFileInput');
+
+let pendingImportTarget = 'both';
 
 // DOM elements – Folder Scan & Domain Tester
 const folderSelect = document.getElementById('folderSelect');
@@ -225,12 +243,15 @@ const domainTestOutput = document.getElementById('domainTestOutput');
 // DOM elements – Live Diagnostics Table & Context Menu
 const diagStats = document.getElementById('diagStats');
 const logFilterStatus = document.getElementById('logFilterStatus');
+const logFilterMaxScore = document.getElementById('logFilterMaxScore');
 const logSearchInput = document.getElementById('logSearchInput');
 const clearLogBtn = document.getElementById('clearLogBtn');
 const diagTableBody = document.getElementById('diagTableBody');
 
 const historyContextMenu = document.getElementById('historyContextMenu');
 const ctxMenuHeader = document.getElementById('ctxMenuHeader');
+const ctxOpenEmail = document.getElementById('ctxOpenEmail');
+const ctxOpenDivider = document.getElementById('ctxOpenDivider');
 const ctxWlEmail = document.getElementById('ctxWlEmail');
 const ctxWlDomain = document.getElementById('ctxWlDomain');
 const ctxBlEmail = document.getElementById('ctxBlEmail');
@@ -244,8 +265,8 @@ const ctxBlDomain = document.getElementById('ctxBlDomain');
 let currentSettingsState = cloneDefaults();
 /** Complete diagnostic log (unfiltered) as delivered by background.js / storage. */
 let fullDiagnosticLog = [];
-/** Email address and wildcard domain of the history row the context menu was opened on. */
-let ctxMenuTarget = { email: '', domainPattern: '' };
+/** Email address, wildcard domain and message identifiers of the history row the context menu was opened on. */
+let ctxMenuTarget = { email: '', domainPattern: '', messageId: '', headerMessageId: '' };
 /** Last folder list received from background.js (cached to re-render after a language switch). */
 let lastFolderList = null;
 
@@ -394,6 +415,15 @@ function renderRuleLists(settings) {
     whitelistCount.textContent = tr('opt_list_count', { count: wl.length });
     blacklistCount.textContent = tr('opt_list_count', { count: bl.length });
 
+    clearWhitelistBtn.disabled = wl.length === 0;
+    exportWhitelistJsonBtn.disabled = wl.length === 0;
+    exportWhitelistCsvBtn.disabled = wl.length === 0;
+    clearBlacklistBtn.disabled = bl.length === 0;
+    exportBlacklistJsonBtn.disabled = bl.length === 0;
+    exportBlacklistCsvBtn.disabled = bl.length === 0;
+    exportBothJsonBtn.disabled = wl.length === 0 && bl.length === 0;
+    exportBothCsvBtn.disabled = wl.length === 0 && bl.length === 0;
+
     if (wl.length === 0) {
         const span = document.createElement('span');
         span.className = 'muted text-md';
@@ -477,12 +507,15 @@ async function modifyListEntry(listType, op, rawPattern) {
     if (messenger.storage && messenger.storage.local) {
         await messenger.storage.local.set({ settings: currentSettingsState });
     }
-    await sendToBackground({
+    const resp = await sendToBackground({
         action: 'MODIFY_LIST',
         listType,
         op,
         pattern
     });
+    if (resp && resp.settings) {
+        currentSettingsState = resp.settings;
+    }
 
     renderRuleLists(currentSettingsState);
     const listLabel = listType === 'whitelist' ? tr('pill_whitelist') : tr('pill_blacklist');
@@ -508,6 +541,7 @@ function populateSettingsForm(settings) {
     if (showMessageBannerInput) showMessageBannerInput.checked = merged.showMessageBanner !== false;
     if (autoCheckOnDisplayInput) autoCheckOnDisplayInput.checked = Boolean(merged.autoCheckOnDisplay);
     if (tagEvaluatedMessagesInput) tagEvaluatedMessagesInput.checked = merged.tagEvaluatedMessages !== false;
+    if (moveWhitelistedToInboxInput) moveWhitelistedToInboxInput.checked = merged.moveWhitelistedToInbox !== false;
 
     const checks = merged.checks || {};
     for (const [key, fields] of Object.entries(chkFields)) {
@@ -588,6 +622,7 @@ function collectSettingsFromForm() {
         showMessageBanner: showMessageBannerInput ? showMessageBannerInput.checked : true,
         autoCheckOnDisplay: autoCheckOnDisplayInput ? autoCheckOnDisplayInput.checked : false,
         tagEvaluatedMessages: tagEvaluatedMessagesInput ? tagEvaluatedMessagesInput.checked : true,
+        moveWhitelistedToInbox: moveWhitelistedToInboxInput ? moveWhitelistedToInboxInput.checked : true,
         whitelist: Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [],
         blacklist: Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [],
         checks
@@ -702,6 +737,11 @@ function createDiagnosticRow(entry, localeCode) {
 
     if (email) trEl.dataset.rowEmail = email;
     if (domainWildcard) trEl.dataset.rowDomain = domainWildcard;
+    if (entry.messageId) trEl.dataset.messageId = String(entry.messageId);
+    if (entry.headerMessageId) trEl.dataset.headerMessageId = String(entry.headerMessageId);
+    if (entry.messageId || entry.headerMessageId) {
+        trEl.title = tr('diag_row_dblclick_hint');
+    }
 
     // Col 1: Time & Date
     const tdTime = document.createElement('td');
@@ -839,12 +879,44 @@ function createDiagnosticRow(entry, localeCode) {
 }
 
 /**
+ * Checks whether a diagnostic log entry's sender email or domain matches any pattern in a rule list.
+ * Supports exact email patterns, wildcard domain patterns (*.domain.tld), and plain domain patterns.
+ * @param {string[]} ruleList
+ * @param {object} entry
+ * @returns {boolean}
+ */
+function matchesDiagnosticEntryRuleList(ruleList, entry) {
+    if (!Array.isArray(ruleList) || ruleList.length === 0) return false;
+    const email = String(entry.senderEmail || getEmailFromAuthorString(entry.author) || '').trim().toLowerCase();
+    const emailDom = email.includes('@') ? email.slice(email.lastIndexOf('@') + 1) : '';
+    const domain = String(entry.domain || emailDom || '').trim().toLowerCase();
+
+    for (const rawPattern of ruleList) {
+        const p = String(rawPattern || '').trim().toLowerCase();
+        if (!p) continue;
+        if (p.includes('@')) {
+            if (email && email === p) return true;
+        } else if (p.startsWith('*.')) {
+            const base = p.slice(2);
+            if (base && domain && (domain === base || domain.endsWith('.' + base))) return true;
+        } else {
+            if (domain && domain === p) return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Renders the Live Diagnostics table from fullDiagnosticLog.
- * Applies the status filter (all / spam / ok) and the free-text search (domain, author,
- * subject, folder), updates the statistics line and shows an empty-state row if nothing matches.
+ * Applies the status/list filter (all / spam / ok / whitelist / blacklist), max-score filter (< X),
+ * and the free-text search (domain, author, subject, folder), updates the statistics line
+ * and shows an empty-state row if nothing matches.
  */
 function renderDiagnosticTable() {
     const statusFilter = logFilterStatus.value;
+    const maxScoreRaw = logFilterMaxScore ? logFilterMaxScore.value.trim() : '';
+    const hasMaxScore = maxScoreRaw !== '' && Number.isFinite(Number(maxScoreRaw));
+    const maxScoreVal = hasMaxScore ? Number(maxScoreRaw) : null;
     const query = (logSearchInput.value || '').trim().toLowerCase();
 
     const spamCount = fullDiagnosticLog.filter(e => e.isSpam).length;
@@ -853,6 +925,15 @@ function renderDiagnosticTable() {
     const filtered = fullDiagnosticLog.filter(entry => {
         if (statusFilter === 'spam' && !entry.isSpam) return false;
         if (statusFilter === 'ok' && entry.isSpam) return false;
+        if (statusFilter === 'whitelist') {
+            const matched = entry.actionTaken === 'whitelist' || matchesDiagnosticEntryRuleList(currentSettingsState.whitelist, entry);
+            if (!matched) return false;
+        }
+        if (statusFilter === 'blacklist') {
+            const matched = String(entry.actionTaken || '').startsWith('blacklist') || matchesDiagnosticEntryRuleList(currentSettingsState.blacklist, entry);
+            if (!matched) return false;
+        }
+        if (hasMaxScore && !(Number(entry.score) < maxScoreVal)) return false;
         if (query) {
             const hay = `${entry.domain} ${entry.author} ${entry.subject} ${entry.folderName}`.toLowerCase();
             if (!hay.includes(query)) return false;
@@ -1123,6 +1204,334 @@ blacklistChips.addEventListener('click', async (e) => {
     await modifyListEntry('blacklist', 'remove', btn.getAttribute('data-pattern'));
 });
 
+/**
+ * Displays a contextual status message inside the Whitelist/Blacklist management card.
+ * @param {string} message
+ * @param {'success'|'error'|'warning'} kind
+ */
+function showListTransferStatus(message, kind = 'success') {
+    if (!listTransferStatus) return;
+    listTransferStatus.textContent = message;
+    listTransferStatus.classList.remove('hidden', 'is-success', 'is-error', 'is-warning');
+    listTransferStatus.classList.add(`is-${kind}`);
+}
+
+/**
+ * Extracts the first cell of a CSV line, handling optional surrounding quotes and comma/semicolon delimiters.
+ * @param {string} line
+ * @returns {string}
+ */
+function parseFirstCsvCell(line) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('"')) {
+        let out = '';
+        for (let i = 1; i < trimmed.length; i++) {
+            const ch = trimmed[i];
+            if (ch === '"') {
+                if (trimmed[i + 1] === '"') {
+                    out += '"';
+                    i++;
+                } else {
+                    break;
+                }
+            } else {
+                out += ch;
+            }
+        }
+        return out.trim();
+    }
+    const sepIdx = trimmed.search(/[,;]/);
+    return (sepIdx === -1 ? trimmed : trimmed.slice(0, sepIdx)).trim();
+}
+
+/**
+ * Parses and strictly validates an imported JSON or CSV rule file against the expected target list.
+ * Rejects unmarked files or files containing only the opposite list to prevent accidental cross-imports.
+ * @param {string} rawText
+ * @param {string} fileName
+ * @param {'whitelist'|'blacklist'|'both'} expectedTarget
+ * @returns {{ ok: true, whitelist: string[]|null, blacklist: string[]|null, hasOtherSection: boolean } | { ok: false, error: string }}
+ */
+function parseRuleImportContent(rawText, fileName, expectedTarget) {
+    const text = String(rawText || '').replace(/^\uFEFF/, '').trim();
+    if (!text) {
+        return { ok: false, error: tr('opt_import_err_empty') };
+    }
+
+    const cleanList = (arr) => Array.isArray(arr)
+        ? arr.map(v => String(v || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+
+    let hasWl = false;
+    let hasBl = false;
+    let wlEntries = [];
+    let blEntries = [];
+
+    const looksJson = String(fileName || '').toLowerCase().endsWith('.json') || text.startsWith('{') || text.startsWith('[');
+    if (looksJson) {
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch (_err) {
+            return { ok: false, error: tr('opt_import_err_format') };
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return { ok: false, error: tr('opt_import_err_unmarked') };
+        }
+        hasWl = Array.isArray(parsed.whitelist);
+        hasBl = Array.isArray(parsed.blacklist);
+        if (!hasWl && !hasBl) {
+            return { ok: false, error: tr('opt_import_err_unmarked') };
+        }
+        wlEntries = cleanList(parsed.whitelist);
+        blEntries = cleanList(parsed.blacklist);
+    } else {
+        const lines = text.split(/\r?\n/);
+        let currentSection = null;
+        for (const rawLine of lines) {
+            const trimmed = rawLine.trim();
+            if (!trimmed) continue;
+            if (/^#\s*(SPAM-SHIELD-)?WHITELIST\b/i.test(trimmed)) {
+                currentSection = 'whitelist';
+                hasWl = true;
+                continue;
+            }
+            if (/^#\s*(SPAM-SHIELD-)?BLACKLIST\b/i.test(trimmed)) {
+                currentSection = 'blacklist';
+                hasBl = true;
+                continue;
+            }
+            if (trimmed.startsWith('#')) {
+                continue;
+            }
+            const cell = parseFirstCsvCell(trimmed).toLowerCase();
+            if (!cell) continue;
+            if (!currentSection) {
+                return { ok: false, error: tr('opt_import_err_unmarked') };
+            }
+            if (currentSection === 'whitelist') {
+                wlEntries.push(cell);
+            } else {
+                blEntries.push(cell);
+            }
+        }
+        if (!hasWl && !hasBl) {
+            return { ok: false, error: tr('opt_import_err_unmarked') };
+        }
+    }
+
+    if (expectedTarget === 'whitelist') {
+        if (!hasWl) {
+            return {
+                ok: false,
+                error: tr('opt_import_err_wrong_list', {
+                    expected: tr('opt_list_name_wl'),
+                    found: tr('opt_list_name_bl')
+                })
+            };
+        }
+        if (wlEntries.length === 0) {
+            return { ok: false, error: tr('opt_import_err_empty') };
+        }
+        return { ok: true, whitelist: wlEntries, blacklist: null, hasOtherSection: hasBl };
+    }
+
+    if (expectedTarget === 'blacklist') {
+        if (!hasBl) {
+            return {
+                ok: false,
+                error: tr('opt_import_err_wrong_list', {
+                    expected: tr('opt_list_name_bl'),
+                    found: tr('opt_list_name_wl')
+                })
+            };
+        }
+        if (blEntries.length === 0) {
+            return { ok: false, error: tr('opt_import_err_empty') };
+        }
+        return { ok: true, whitelist: null, blacklist: blEntries, hasOtherSection: hasWl };
+    }
+
+    if (wlEntries.length === 0 && blEntries.length === 0) {
+        return { ok: false, error: tr('opt_import_err_empty') };
+    }
+    return {
+        ok: true,
+        whitelist: hasWl ? wlEntries : null,
+        blacklist: hasBl ? blEntries : null,
+        hasOtherSection: false
+    };
+}
+
+/**
+ * Exports the specified list(s) as a JSON or CSV file with explicit list markers.
+ * @param {'whitelist'|'blacklist'|'both'} target
+ * @param {'json'|'csv'} format
+ */
+function exportRuleLists(target, format) {
+    const wl = Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [];
+    const bl = Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [];
+
+    const count = target === 'whitelist'
+        ? wl.length
+        : target === 'blacklist'
+            ? bl.length
+            : wl.length + bl.length;
+
+    if (count === 0) {
+        showListTransferStatus(tr('opt_export_empty'), 'warning');
+        return;
+    }
+
+    let content = '';
+    let mimeType = 'text/plain;charset=utf-8';
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const filename = `spam-shield-${target}-${dateStamp}.${format}`;
+
+    if (format === 'json') {
+        const payload = {
+            format: 'spam-shield-rules',
+            version: 1,
+            exportedAt: new Date().toISOString()
+        };
+        if (target === 'whitelist' || target === 'both') payload.whitelist = wl;
+        if (target === 'blacklist' || target === 'both') payload.blacklist = bl;
+        content = JSON.stringify(payload, null, 2) + '\n';
+        mimeType = 'application/json;charset=utf-8';
+    } else {
+        const lines = ['# Spam Shield Rules Export (v1)'];
+        if (target === 'whitelist' || target === 'both') {
+            lines.push('#WHITELIST');
+            for (const entry of wl) lines.push(entry);
+        }
+        if (target === 'blacklist' || target === 'both') {
+            if (target === 'both') lines.push('');
+            lines.push('#BLACKLIST');
+            for (const entry of bl) lines.push(entry);
+        }
+        content = lines.join('\n') + '\n';
+        mimeType = 'text/csv;charset=utf-8';
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    const listLabel = target === 'whitelist'
+        ? tr('opt_list_name_wl')
+        : target === 'blacklist'
+            ? tr('opt_list_name_bl')
+            : tr('opt_list_name_both');
+    showListTransferStatus(tr('opt_export_done', { list: listLabel, format: format.toUpperCase(), count }), 'success');
+}
+
+/**
+ * Clears all entries from the specified list after asking the user for confirmation.
+ * @param {'whitelist'|'blacklist'} listType
+ */
+async function clearRuleList(listType) {
+    const list = Array.isArray(currentSettingsState[listType]) ? currentSettingsState[listType] : [];
+    if (list.length === 0) return;
+
+    const confirmKey = listType === 'whitelist' ? 'opt_confirm_clear_wl' : 'opt_confirm_clear_bl';
+    if (!window.confirm(tr(confirmKey, { count: list.length }))) {
+        return;
+    }
+
+    const resp = await sendToBackground({ action: 'CLEAR_LIST', listType });
+    if (resp && resp.error) {
+        showListTransferStatus(tr('toast_err', { error: resp.error }), 'error');
+        return;
+    }
+    if (resp && resp.settings) {
+        currentSettingsState = resp.settings;
+    } else {
+        currentSettingsState[listType] = [];
+    }
+    renderRuleLists(currentSettingsState);
+
+    const listLabel = listType === 'whitelist' ? tr('opt_list_name_wl') : tr('opt_list_name_bl');
+    showListTransferStatus(tr('opt_list_cleared', { list: listLabel, count: list.length }), 'success');
+}
+
+function triggerRuleImport(target) {
+    pendingImportTarget = target;
+    ruleImportFileInput.value = '';
+    ruleImportFileInput.click();
+}
+
+exportWhitelistJsonBtn.addEventListener('click', () => exportRuleLists('whitelist', 'json'));
+exportWhitelistCsvBtn.addEventListener('click', () => exportRuleLists('whitelist', 'csv'));
+importWhitelistBtn.addEventListener('click', () => triggerRuleImport('whitelist'));
+clearWhitelistBtn.addEventListener('click', () => clearRuleList('whitelist'));
+
+exportBlacklistJsonBtn.addEventListener('click', () => exportRuleLists('blacklist', 'json'));
+exportBlacklistCsvBtn.addEventListener('click', () => exportRuleLists('blacklist', 'csv'));
+importBlacklistBtn.addEventListener('click', () => triggerRuleImport('blacklist'));
+clearBlacklistBtn.addEventListener('click', () => clearRuleList('blacklist'));
+
+exportBothJsonBtn.addEventListener('click', () => exportRuleLists('both', 'json'));
+exportBothCsvBtn.addEventListener('click', () => exportRuleLists('both', 'csv'));
+importBothBtn.addEventListener('click', () => triggerRuleImport('both'));
+
+ruleImportFileInput.addEventListener('change', async () => {
+    const file = ruleImportFileInput.files && ruleImportFileInput.files[0];
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const parsed = parseRuleImportContent(text, file.name, pendingImportTarget);
+        if (!parsed.ok) {
+            showListTransferStatus(parsed.error, 'error');
+            return;
+        }
+
+        const resp = await sendToBackground({
+            action: 'IMPORT_LISTS',
+            whitelist: parsed.whitelist,
+            blacklist: parsed.blacklist
+        });
+        if (!resp || resp.error) {
+            showListTransferStatus(tr('toast_err', { error: (resp && resp.error) || 'Unknown error' }), 'error');
+            return;
+        }
+
+        if (resp.settings) {
+            currentSettingsState = resp.settings;
+        }
+        renderRuleLists(currentSettingsState);
+
+        const wlStats = (resp.stats && resp.stats.whitelist) || { added: 0, replaced: 0, skipped: 0 };
+        const blStats = (resp.stats && resp.stats.blacklist) || { added: 0, replaced: 0, skipped: 0 };
+        const added = wlStats.added + blStats.added;
+        const replaced = wlStats.replaced + blStats.replaced;
+        const skipped = wlStats.skipped + blStats.skipped;
+
+        const targetLabel = pendingImportTarget === 'whitelist'
+            ? tr('opt_list_name_wl')
+            : pendingImportTarget === 'blacklist'
+                ? tr('opt_list_name_bl')
+                : tr('opt_list_name_both');
+
+        let msg = tr('opt_import_done', { target: targetLabel, added, replaced, skipped });
+        if (parsed.hasOtherSection) {
+            msg += tr('opt_import_combined_single_note', { target: targetLabel });
+        }
+        showListTransferStatus(msg, parsed.hasOtherSection ? 'warning' : 'success');
+    } catch (err) {
+        showListTransferStatus(tr('toast_err', { error: err && err.message ? err.message : String(err) }), 'error');
+    } finally {
+        ruleImportFileInput.value = '';
+    }
+});
+
 // Event listeners – Quick buttons & right-click context menu in the history table
 // Quick buttons (+WL / ⛔BL) inside the history table rows (delegated click handler)
 diagTableBody.addEventListener('click', async (e) => {
@@ -1133,18 +1542,52 @@ diagTableBody.addEventListener('click', async (e) => {
     await modifyListEntry(listType, 'add', pattern);
 });
 
-// Custom right-click context menu on history rows: offers Whitelist/Blacklist actions
+/**
+ * Requests background.js to open the email corresponding to a Live Diagnostics row in Thunderbird.
+ * @param {string} messageId
+ * @param {string} headerMessageId
+ */
+async function openDiagnosticMessage(messageId, headerMessageId) {
+    if (!messageId && !headerMessageId) return;
+    const resp = await sendToBackground({
+        action: 'OPEN_DIAGNOSTIC_MESSAGE',
+        messageId,
+        headerMessageId
+    });
+    if (resp && resp.error) {
+        flashSaveStatus(resp.error);
+    }
+}
+
+// Double-click on a history row opens the corresponding email in Thunderbird
+diagTableBody.addEventListener('dblclick', async (e) => {
+    if (e.target.closest('button')) return;
+    const row = e.target.closest('tr[data-message-id], tr[data-header-message-id]');
+    if (!row) return;
+    await openDiagnosticMessage(
+        row.getAttribute('data-message-id') || '',
+        row.getAttribute('data-header-message-id') || ''
+    );
+});
+
+// Custom right-click context menu on history rows: offers Open Email and Whitelist/Blacklist actions
 // for the row's sender email and wildcard domain. The menu is clamped to stay inside the viewport.
 diagTableBody.addEventListener('contextmenu', (e) => {
-    const row = e.target.closest('tr[data-row-email], tr[data-row-domain]');
+    const row = e.target.closest('tr[data-row-email], tr[data-row-domain], tr[data-message-id], tr[data-header-message-id]');
     if (!row) return;
     const email = row.getAttribute('data-row-email') || '';
     const domainPattern = row.getAttribute('data-row-domain') || '';
-    if (!email && !domainPattern) return;
+    const messageId = row.getAttribute('data-message-id') || '';
+    const headerMessageId = row.getAttribute('data-header-message-id') || '';
+    if (!email && !domainPattern && !messageId && !headerMessageId) return;
 
     e.preventDefault();
-    ctxMenuTarget = { email, domainPattern };
+    ctxMenuTarget = { email, domainPattern, messageId, headerMessageId };
     ctxMenuHeader.textContent = email ? `${email} (${domainPattern})` : domainPattern;
+
+    const canOpen = Boolean(messageId || headerMessageId);
+    if (ctxOpenEmail) ctxOpenEmail.classList.toggle('hidden', !canOpen);
+    if (ctxOpenDivider) ctxOpenDivider.classList.toggle('hidden', !canOpen || (!email && !domainPattern));
 
     ctxWlEmail.classList.toggle('hidden', !email);
     ctxWlEmail.textContent = tr('ctx_wl_email', { email });
@@ -1160,7 +1603,7 @@ diagTableBody.addEventListener('contextmenu', (e) => {
 
     // Approximate menu dimensions used to keep the menu fully visible near the window edges
     const menuWidth = 310;
-    const menuHeight = 160;
+    const menuHeight = 195;
     const x = Math.min(e.clientX, window.innerWidth - menuWidth - 10);
     const y = Math.min(e.clientY, window.innerHeight - menuHeight - 10);
 
@@ -1181,6 +1624,9 @@ document.addEventListener('click', hideContextMenu);
 window.addEventListener('scroll', hideContextMenu, true);
 
 // Context menu actions use the target captured when the menu was opened
+if (ctxOpenEmail) {
+    ctxOpenEmail.addEventListener('click', () => openDiagnosticMessage(ctxMenuTarget.messageId, ctxMenuTarget.headerMessageId));
+}
 ctxWlEmail.addEventListener('click', () => modifyListEntry('whitelist', 'add', ctxMenuTarget.email));
 ctxWlDomain.addEventListener('click', () => modifyListEntry('whitelist', 'add', ctxMenuTarget.domainPattern));
 ctxBlEmail.addEventListener('click', () => modifyListEntry('blacklist', 'add', ctxMenuTarget.email));
@@ -1298,8 +1744,9 @@ runDomainTestBtn.addEventListener('click', async () => {
     await loadState(false);
 });
 
-// Re-render the history table whenever the status filter or the search text changes
+// Re-render the history table whenever the status filter, score filter, or search text changes
 logFilterStatus.addEventListener('change', renderDiagnosticTable);
+if (logFilterMaxScore) logFilterMaxScore.addEventListener('input', renderDiagnosticTable);
 logSearchInput.addEventListener('input', renderDiagnosticTable);
 
 // Clears the complete diagnostic history (storage.local and in-memory log in background.js)

@@ -106,6 +106,14 @@
           <input type="checkbox" id="tagEvaluatedMessages">
         </div>
 
+        <div class="form-row">
+          <div>
+            <label for="moveWhitelistedToInbox" data-i18n="opt_move_wl_inbox_label">Whitelist-E-Mails aus dem Spam-Ordner in den Posteingang verschieben</label>
+            <span class="hint" data-i18n="opt_move_wl_inbox_hint">Wenn aktiv, wird beim Hinzufügen einer E-Mail oder Domain zur Whitelist eine im Spam-/Junk-Ordner liegende Mail automatisch in den Posteingang verschoben.</span>
+          </div>
+          <input type="checkbox" id="moveWhitelistedToInbox">
+        </div>
+
         <h3 style="font-size:13px; margin:14px 0 6px;" data-i18n="opt_checks_heading">Einzelne DNS-, Reputations- &amp; Authentifizierungs-Prüfungen</h3>
         <div class="settings-table-wrap">
         <table class="settings-table">
@@ -313,6 +321,12 @@
                 <button id="addWhitelistBtn" data-i18n="opt_wl_add_btn">➕ Zur Whitelist</button>
               </div>
               <div id="whitelistChips" class="rule-chips"></div>
+              <div class="btn-row list-actions-row">
+                <button id="exportWhitelistJsonBtn" class="btn-sm" data-i18n="opt_export_json_btn">📤 Export JSON</button>
+                <button id="exportWhitelistCsvBtn" class="btn-sm" data-i18n="opt_export_csv_btn">📤 Export CSV</button>
+                <button id="importWhitelistBtn" class="btn-sm" data-i18n="opt_import_btn">📥 Import (JSON/CSV)</button>
+                <button id="clearWhitelistBtn" class="btn-sm btn-danger" data-i18n="opt_clear_list_btn">🗑️ Leeren</button>
+              </div>
             </div>
 
             <!-- Blacklist -->
@@ -326,7 +340,25 @@
                 <button id="addBlacklistBtn" data-i18n="opt_bl_add_btn">⛔ Zur Blacklist</button>
               </div>
               <div id="blacklistChips" class="rule-chips"></div>
+              <div class="btn-row list-actions-row">
+                <button id="exportBlacklistJsonBtn" class="btn-sm" data-i18n="opt_export_json_btn">📤 Export JSON</button>
+                <button id="exportBlacklistCsvBtn" class="btn-sm" data-i18n="opt_export_csv_btn">📤 Export CSV</button>
+                <button id="importBlacklistBtn" class="btn-sm" data-i18n="opt_import_btn">📥 Import (JSON/CSV)</button>
+                <button id="clearBlacklistBtn" class="btn-sm btn-danger" data-i18n="opt_clear_list_btn">🗑️ Leeren</button>
+              </div>
             </div>
+
+            <!-- Combined Whitelist + Blacklist Export / Import -->
+            <div class="list-combined-bar">
+              <span class="muted list-combined-label" data-i18n="opt_combined_lists_label">📦 Beide Listen (WL + BL):</span>
+              <div class="btn-row">
+                <button id="exportBothJsonBtn" class="btn-sm" data-i18n="opt_export_both_json_btn">📤 Beide als JSON</button>
+                <button id="exportBothCsvBtn" class="btn-sm" data-i18n="opt_export_both_csv_btn">📤 Beide als CSV</button>
+                <button id="importBothBtn" class="btn-sm" data-i18n="opt_import_both_btn">📥 Beide importieren</button>
+              </div>
+            </div>
+            <div id="listTransferStatus" class="list-transfer-status hidden" role="status"></div>
+            <input type="file" id="ruleImportFileInput" accept=".json,.csv,application/json,text/csv" class="hidden">
           </div>
         </section>
       </div>
@@ -342,7 +374,10 @@
             <option value="all" data-i18n="opt_filter_all">Alle Status anzeigen</option>
             <option value="spam" data-i18n="opt_filter_spam">Nur erkannte Spam-Mails</option>
             <option value="ok" data-i18n="opt_filter_ok">Nur unauffällige Mails (OK)</option>
+            <option value="whitelist" data-i18n="opt_filter_whitelist">Nur Whitelist-Treffer</option>
+            <option value="blacklist" data-i18n="opt_filter_blacklist">Nur Blacklist-Treffer</option>
           </select>
+          <input type="number" id="logFilterMaxScore" step="5" max="0" min="-500" data-i18n-placeholder="opt_filter_score_placeholder" placeholder="Score &lt; …" class="score-filter-input">
           <input type="text" id="logSearchInput" data-i18n-placeholder="opt_search_placeholder" placeholder="Suche nach Domain, Absender, Betreff…" style="width:240px;">
           <button id="clearLogBtn" class="btn-danger" data-i18n="opt_clear_log_btn">🗑️ Protokoll leeren</button>
         </div>
@@ -375,6 +410,8 @@
   <!-- Right-click context menu for the history table -->
   <div id="historyContextMenu" class="ctx-menu">
     <div id="ctxMenuHeader" class="ctx-menu-header" data-i18n="ctx_header_default">Absender / Domain</div>
+    <button type="button" id="ctxOpenEmail" class="ctx-menu-item" data-i18n="ctx_open_email">📧 E-Mail öffnen</button>
+    <div id="ctxOpenDivider" class="ctx-menu-divider"></div>
     <button type="button" id="ctxWlEmail" class="ctx-menu-item">✅ E-Mail zur Whitelist hinzufügen</button>
     <button type="button" id="ctxWlDomain" class="ctx-menu-item">✅ Domain (*.domain) zur Whitelist hinzufügen</button>
     <button type="button" id="ctxBlEmail" class="ctx-menu-item">⛔ E-Mail zur Blacklist hinzufügen</button>
