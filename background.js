@@ -44,17 +44,63 @@ function isJunkOrTrashFolder(folder) {
 }
 
 /**
+ * Checks whether a folder represents a Junk/Spam folder (excluding Trash).
+ * @param {object|null} folder MailFolder object
+ * @returns {boolean}
+ */
+function isJunkFolder(folder) {
+    if (!folder) return false;
+    if (Array.isArray(folder.specialUse) && folder.specialUse.includes('junk')) {
+        return true;
+    }
+    const name = (folder.name || '').toLowerCase();
+    return name === 'junk' || name === 'spam' || name === 'spamverdacht';
+}
+
+/**
+ * Clears the junk flag on a message and moves it to the account's Inbox,
+ * but only if the message is currently located in a Spam/Junk folder.
+ * @param {object} message MailMessageHeader object
+ * @param {object|null} sourceFolder Optional fallback MailFolder
+ * @returns {Promise<boolean>} True if moved to Inbox
+ */
+async function moveMessageToInbox(message, sourceFolder = null) {
+    if (!message || !message.id) return false;
+    try {
+        await messenger.messages.update(message.id, { junk: false }).catch(() => {});
+        const currentFolder = sourceFolder || message.folder;
+        if (!isJunkFolder(currentFolder)) {
+            return false;
+        }
+        const accountId = currentFolder && currentFolder.accountId;
+        if (!accountId) return false;
+        const inboxFolders = await messenger.folders.query({
+            accountId,
+            specialUse: ['inbox']
+        });
+        if (inboxFolders && inboxFolders.length > 0 && currentFolder.id !== inboxFolders[0].id) {
+            await messenger.messages.move([message.id], inboxFolders[0].id);
+            return true;
+        }
+    } catch (err) {
+        console.warn(`Failed to move whitelisted message ${message.id} to Inbox:`, err);
+    }
+    return false;
+}
+
+/**
  * Default configuration for checks, scores, and behavior
  */
 const DEFAULT_SETTINGS = {
     language: 'auto',
     spamThreshold: -50,
-    dryRun: false,
+    dryRun: true,
     monitorAllFolders: true,
     maxLogEntries: 100,
     showMessageBanner: true,
     autoCheckOnDisplay: false,
     tagEvaluatedMessages: true,
+    moveWhitelistedToInbox: true,
     whitelist: [],
     blacklist: [],
     checks: {
@@ -92,7 +138,7 @@ const DEFAULT_SETTINGS = {
         dnsbl: {
             enabled: true,
             score: -80,
-            minHits: 1,
+            minHits: 2,
             providers: {
                 nordspam: true,
                 spamhaus: true,
@@ -638,15 +684,89 @@ function setupContextMenus() {
     }).catch(err => console.warn('Failed to create context menus:', err));
 }
 
-async function addPatternsToList(listType, patterns) {
-    const current = await getSettings();
-    const list = Array.isArray(current[listType]) ? [...current[listType]] : [];
-    for (const raw of patterns) {
+/**
+ * Checks whether an email rule pattern (e.g. "user@email.com") is subsumed by
+ * a domain rule pattern (e.g. "*.email.com" or "email.com").
+ * @param {string} emailPattern Normalized lowercase rule containing "@".
+ * @param {string} domainPattern Normalized lowercase domain rule without "@".
+ * @returns {boolean}
+ */
+function isEmailCoveredByDomainPattern(emailPattern, domainPattern) {
+    const atIdx = emailPattern.lastIndexOf('@');
+    if (atIdx === -1 || !domainPattern || domainPattern.includes('@')) return false;
+    const emailDomain = emailPattern.slice(atIdx + 1);
+    if (!emailDomain) return false;
+    if (domainPattern.startsWith('*.')) {
+        const base = domainPattern.slice(2);
+        return Boolean(base) && (emailDomain === base || emailDomain.endsWith('.' + base));
+    }
+    return emailDomain === domainPattern;
+}
+
+/**
+ * Merges incoming rule patterns into an existing whitelist/blacklist.
+ * - Normalizes patterns (trim + lowercase) and deduplicates case-insensitively.
+ * - Domain rules (e.g. "*.email.com" or "email.com") replace any existing or incoming
+ *   email-specific rules for the same domain (e.g. "some-name@email.com").
+ * - Incoming email rules already covered by an existing domain rule are skipped.
+ * @param {string[]} existingList
+ * @param {string[]} incomingPatterns
+ * @returns {{ list: string[], added: number, replaced: number, skipped: number }}
+ */
+function mergeRulePatterns(existingList, incomingPatterns) {
+    const list = [];
+    const seen = new Set();
+
+    for (const raw of (Array.isArray(existingList) ? existingList : [])) {
         const p = String(raw || '').trim().toLowerCase();
-        if (p && !list.some(item => String(item).toLowerCase() === p)) {
-            list.unshift(p);
+        if (p && !seen.has(p)) {
+            seen.add(p);
+            list.push(p);
         }
     }
+
+    let added = 0;
+    let replaced = 0;
+    let skipped = 0;
+
+    for (const raw of (Array.isArray(incomingPatterns) ? incomingPatterns : [])) {
+        const p = String(raw || '').trim().toLowerCase();
+        if (!p) continue;
+
+        if (seen.has(p)) {
+            skipped++;
+            continue;
+        }
+
+        if (p.includes('@')) {
+            const domainRules = list.filter(item => !item.includes('@'));
+            if (domainRules.some(domRule => isEmailCoveredByDomainPattern(p, domRule))) {
+                skipped++;
+                continue;
+            }
+            seen.add(p);
+            list.unshift(p);
+            added++;
+        } else {
+            for (let i = list.length - 1; i >= 0; i--) {
+                if (list[i].includes('@') && isEmailCoveredByDomainPattern(list[i], p)) {
+                    seen.delete(list[i]);
+                    list.splice(i, 1);
+                    replaced++;
+                }
+            }
+            seen.add(p);
+            list.unshift(p);
+            added++;
+        }
+    }
+
+    return { list, added, replaced, skipped };
+}
+
+async function addPatternsToList(listType, patterns) {
+    const current = await getSettings();
+    const { list } = mergeRulePatterns(current[listType], patterns);
     current[listType] = list;
     if (messenger.storage && messenger.storage.local) {
         await messenger.storage.local.set({ settings: current });
@@ -702,8 +822,10 @@ if (messenger.menus && messenger.menus.onClicked) {
             const isWhitelist = info.menuItemId.startsWith('suke-whitelist');
             const isDomainMode = info.menuItemId.endsWith('-domain');
             const patterns = [];
+            const targetMessages = [];
 
             for await (const msg of iterateMessagePages(msgList)) {
+                targetMessages.push(msg);
                 if (isDomainMode) {
                     const dom = await extractDomainFromAuthor(msg.author || '');
                     const rootDom = getRegistrableDomain(dom) || dom;
@@ -715,8 +837,13 @@ if (messenger.menus && messenger.menus.onClicked) {
             }
 
             if (patterns.length > 0) {
-                await addPatternsToList(isWhitelist ? 'whitelist' : 'blacklist', patterns);
+                const updatedSettings = await addPatternsToList(isWhitelist ? 'whitelist' : 'blacklist', patterns);
                 await scanMessageList(msgList, fallbackFolder, 'context-messages');
+                if (isWhitelist && updatedSettings.moveWhitelistedToInbox) {
+                    for (const msg of targetMessages) {
+                        await moveMessageToInbox(msg, msg.folder || fallbackFolder);
+                    }
+                }
             }
         }
     });
@@ -967,6 +1094,7 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             id: `${Date.now()}-${message.id}-${Math.random().toString(36).slice(2, 6)}`,
             timestamp: evalRecord.timestamp,
             messageId: message.id,
+            headerMessageId: message.headerMessageId || '',
             author: senderAddress,
             senderEmail: senderEmail || '',
             domain,
@@ -2435,6 +2563,9 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                         if (msg) {
                             if (listType === 'whitelist' && typeof messenger.messages.update === 'function') {
                                 await messenger.messages.update(msg.id, { junk: false }).catch(() => {});
+                                if (updatedSettings.moveWhitelistedToInbox) {
+                                    await moveMessageToInbox(msg, msg.folder || null);
+                                }
                             }
                             const res = await evaluateAndProcessMessage(msg, msg.folder || null, updatedSettings, 'header-action');
                             const evalRecord = (res && res.evalRecord) || await getCachedEvaluation(msg);
@@ -2542,12 +2673,10 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     }
 
                     const current = await getSettings();
-                    const list = Array.isArray(current[listType]) ? [...current[listType]] : [];
+                    let list = Array.isArray(current[listType]) ? [...current[listType]] : [];
 
                     if (op === 'add') {
-                        if (!list.some(item => String(item).toLowerCase() === pattern)) {
-                            list.unshift(pattern);
-                        }
+                        list = mergeRulePatterns(list, [pattern]).list;
                     } else if (op === 'remove') {
                         const idx = list.findIndex(item => String(item).toLowerCase() === pattern);
                         if (idx !== -1) {
@@ -2559,6 +2688,79 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     await messenger.storage.local.set({ settings: current });
                     notifyUI({ type: 'SETTINGS_UPDATED', settings: current });
                     return { success: true, settings: JSON.parse(JSON.stringify(current)) };
+                }
+
+                case 'CLEAR_LIST': {
+                    const listType = request.listType === 'whitelist' ? 'whitelist' : 'blacklist';
+                    const current = await getSettings();
+                    const removed = Array.isArray(current[listType]) ? current[listType].length : 0;
+                    current[listType] = [];
+                    await messenger.storage.local.set({ settings: current });
+                    notifyUI({ type: 'SETTINGS_UPDATED', settings: current });
+                    broadcastBannerRefresh().catch(() => {});
+                    return { success: true, removed, settings: JSON.parse(JSON.stringify(current)) };
+                }
+
+                case 'IMPORT_LISTS': {
+                    const current = await getSettings();
+                    const stats = {
+                        whitelist: { added: 0, replaced: 0, skipped: 0 },
+                        blacklist: { added: 0, replaced: 0, skipped: 0 }
+                    };
+
+                    if (Array.isArray(request.whitelist)) {
+                        const res = mergeRulePatterns(current.whitelist, request.whitelist);
+                        current.whitelist = res.list;
+                        stats.whitelist = { added: res.added, replaced: res.replaced, skipped: res.skipped };
+                    }
+                    if (Array.isArray(request.blacklist)) {
+                        const res = mergeRulePatterns(current.blacklist, request.blacklist);
+                        current.blacklist = res.list;
+                        stats.blacklist = { added: res.added, replaced: res.replaced, skipped: res.skipped };
+                    }
+
+                    await messenger.storage.local.set({ settings: current });
+                    notifyUI({ type: 'SETTINGS_UPDATED', settings: current });
+                    broadcastBannerRefresh().catch(() => {});
+                    return { success: true, stats, settings: JSON.parse(JSON.stringify(current)) };
+                }
+
+                case 'OPEN_DIAGNOSTIC_MESSAGE': {
+                    if (!messenger.messageDisplay || typeof messenger.messageDisplay.open !== 'function') {
+                        return { error: L('err_mailtabs_unavail') };
+                    }
+                    const rawId = Number(request.messageId);
+                    const headerMsgId = String(request.headerMessageId || '').trim();
+                    let targetId = null;
+
+                    if (Number.isFinite(rawId) && rawId > 0) {
+                        try {
+                            const existing = await messenger.messages.get(rawId);
+                            if (existing && existing.id) {
+                                targetId = existing.id;
+                            }
+                        } catch (_err) {
+                            // Message may have been moved; fall back to headerMessageId lookup
+                        }
+                    }
+
+                    if (!targetId && headerMsgId) {
+                        try {
+                            const page = await messenger.messages.query({ headerMessageId: headerMsgId });
+                            if (page && Array.isArray(page.messages) && page.messages.length > 0) {
+                                targetId = page.messages[0].id;
+                            }
+                        } catch (_err) {
+                            // Ignore query failure
+                        }
+                    }
+
+                    if (!targetId) {
+                        return { error: L('err_diag_msg_not_found') };
+                    }
+
+                    await messenger.messageDisplay.open({ messageId: targetId });
+                    return { success: true, messageId: targetId };
                 }
 
                 default:
