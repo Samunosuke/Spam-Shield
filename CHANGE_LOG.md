@@ -25,6 +25,7 @@ All notable changes to **Spam Shield** are documented in this file.
 - **Safer Out-of-the-Box Defaults for New Installations:**
   - Enabled **Dry-Run Mode** (`dryRun: true`) by default so new users can evaluate results before emails are moved to Junk.
   - Increased **DNSBL Minimum Hits** (`checks.dnsbl.minHits`) default from `1` to `2` to reduce false positives from single-blocklist hits.
+  - Disabled **Thunderbird Message Tagging** (`tagEvaluatedMessages: false`) by default for new installations.
   - Existing users keep their previously saved settings in `storage.local`.
 
 ## [1.7] - 2026-11-10

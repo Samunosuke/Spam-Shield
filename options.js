@@ -32,7 +32,7 @@ const DEFAULT_SETTINGS = {
     maxLogEntries: 100,
     showMessageBanner: true,
     autoCheckOnDisplay: false,
-    tagEvaluatedMessages: true,
+    tagEvaluatedMessages: false,
     moveWhitelistedToInbox: true,
     whitelist: [],
     blacklist: [],
@@ -540,7 +540,7 @@ function populateSettingsForm(settings) {
     maxLogEntriesInput.value = merged.maxLogEntries ?? 100;
     if (showMessageBannerInput) showMessageBannerInput.checked = merged.showMessageBanner !== false;
     if (autoCheckOnDisplayInput) autoCheckOnDisplayInput.checked = Boolean(merged.autoCheckOnDisplay);
-    if (tagEvaluatedMessagesInput) tagEvaluatedMessagesInput.checked = merged.tagEvaluatedMessages !== false;
+    if (tagEvaluatedMessagesInput) tagEvaluatedMessagesInput.checked = Boolean(merged.tagEvaluatedMessages);
     if (moveWhitelistedToInboxInput) moveWhitelistedToInboxInput.checked = merged.moveWhitelistedToInbox !== false;
 
     const checks = merged.checks || {};
@@ -621,7 +621,7 @@ function collectSettingsFromForm() {
         maxLogEntries: Math.max(10, Number(maxLogEntriesInput.value) || 100),
         showMessageBanner: showMessageBannerInput ? showMessageBannerInput.checked : true,
         autoCheckOnDisplay: autoCheckOnDisplayInput ? autoCheckOnDisplayInput.checked : false,
-        tagEvaluatedMessages: tagEvaluatedMessagesInput ? tagEvaluatedMessagesInput.checked : true,
+        tagEvaluatedMessages: tagEvaluatedMessagesInput ? tagEvaluatedMessagesInput.checked : false,
         moveWhitelistedToInbox: moveWhitelistedToInboxInput ? moveWhitelistedToInboxInput.checked : true,
         whitelist: Array.isArray(currentSettingsState.whitelist) ? currentSettingsState.whitelist : [],
         blacklist: Array.isArray(currentSettingsState.blacklist) ? currentSettingsState.blacklist : [],

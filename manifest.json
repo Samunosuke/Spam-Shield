@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Spam Shield",
+  "name": "__MSG_extensionName__",
   "version": "1.8",
-  "description": "Validates sender domains via whitelist/blacklist, DNS, SPF, DKIM, DMARC, domain age (RDAP), DNSBL and spam-kit detection (EN/DE).",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
       "id": "spam-shield@addon.mozilla.org",
@@ -15,6 +16,7 @@
     "messagesMove",
     "messagesUpdate",
     "messagesTags",
+    "messagesTagsList",
     "menus",
     "scripting",
     "storage"
@@ -42,7 +44,7 @@
       "32": "icons/icon-32.png"
     },
     "default_label": "",
-    "default_title": "Spam Shield – Live-Diagnose & Ordnerprüfung",
+    "default_title": "__MSG_actionDefaultTitle__",
     "default_popup": "popup.html"
   },
   "message_display_action": {
@@ -50,8 +52,8 @@
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"
     },
-    "default_label": "Spam Shield",
-    "default_title": "Spam Shield – Bewertung & Diagnose",
+    "default_label": "__MSG_extensionName__",
+    "default_title": "__MSG_messageDisplayActionTitle__",
     "default_popup": "popup.html"
   },
   "options_ui": {

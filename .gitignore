@@ -1,1 +1,6 @@
 *.xpi
+tests/webext-linter/
+tests/WEBEXT-LINTER-CACHE/
+tests/xpi-review-*/
+WEBEXT-LINTER-CACHE/
+xpi-review-*/
