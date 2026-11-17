@@ -1,0 +1,19 @@
+{
+  "extensionName": {
+    "message": "Spam Shield",
+    "description": "Name der Erweiterung."
+  },
+  "extensionDescription": {
+    "message": "Prüft Absender-Domains per Whitelist/Blacklist, DNS, SPF, DKIM, DMARC, Domain-Alter (RDAP), DNSBL und Spam-Kit-Erkennung (DE/EN).",
+    "description": "Beschreibung der Erweiterung."
+  },
+  "actionDefaultTitle": {
+    "message": "Spam Shield – Live-Diagnose & Ordnerprüfung",
+    "description": "Tooltip für den Haupt-Toolbar-Button."
+  },
+  "messageDisplayActionTitle": {
+    "message": "Spam Shield – Bewertung & Diagnose",
+    "description": "Tooltip für den Button in der Nachrichtenansicht."
+  }
+}
+

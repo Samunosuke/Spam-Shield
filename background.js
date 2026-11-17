@@ -99,7 +99,7 @@ const DEFAULT_SETTINGS = {
     maxLogEntries: 100,
     showMessageBanner: true,
     autoCheckOnDisplay: false,
-    tagEvaluatedMessages: true,
+    tagEvaluatedMessages: false,
     moveWhitelistedToInbox: true,
     whitelist: [],
     blacklist: [],
@@ -351,7 +351,7 @@ const SPAM_SHIELD_TAG_KEYS = new Set(Object.values(SPAM_SHIELD_TAG_DEFS).map(d =
  * @param {object} settings
  */
 async function applyEvaluationTag(messageId, evalData, settings) {
-    if (!settings || settings.tagEvaluatedMessages === false) {
+    if (!settings || !settings.tagEvaluatedMessages) {
         return;
     }
     if (!messenger.messages || !messenger.messages.tags || typeof messenger.messages.update !== 'function') {
@@ -1028,8 +1028,9 @@ async function evaluateAndProcessMessage(message, folder, settings, source = 'au
             return { isSpam: false, score: 0 };
         }
 
-        // Use getHeaders() instead of getFull() to avoid parsing the full MIME body
-        // Protected by a timeout promise so slow/unresponsive IMAP connections never freeze evaluation
+        // Use getHeaders() (added in TB 147) instead of getFull() to avoid parsing the full MIME body,
+        // with feature-detection fallback to getFull() for Thunderbird 128/140 ESR compatibility.
+        // Protected by a timeout promise so slow/unresponsive IMAP connections never freeze evaluation.
         let headers = null;
         try {
             const headersPromise = messenger.messages.getHeaders
@@ -1278,6 +1279,7 @@ async function extractEmailFromAuthor(senderAddress) {
         return null;
     }
 
+    // Feature-detect parseMailboxString() (added in TB 137); falls back to regex parsing below on TB 128 ESR
     if (messenger.messengerUtilities && typeof messenger.messengerUtilities.parseMailboxString === 'function') {
         try {
             const parsed = await messenger.messengerUtilities.parseMailboxString(senderAddress);
@@ -1289,6 +1291,7 @@ async function extractEmailFromAuthor(senderAddress) {
         }
     }
 
+    // Fallback for Thunderbird < 137 (and parseMailboxString errors)
     return getEmailFromAddress(senderAddress);
 }
 
@@ -1380,6 +1383,7 @@ async function extractDomainFromAuthor(senderAddress) {
         return null;
     }
 
+    // Feature-detect parseMailboxString() (added in TB 137); falls back to regex parsing below on TB 128 ESR
     if (messenger.messengerUtilities && typeof messenger.messengerUtilities.parseMailboxString === 'function') {
         try {
             const parsed = await messenger.messengerUtilities.parseMailboxString(senderAddress);
@@ -1391,6 +1395,7 @@ async function extractDomainFromAuthor(senderAddress) {
         }
     }
 
+    // Fallback for Thunderbird < 137 (and parseMailboxString errors)
     return getDomainFromAddress(senderAddress);
 }
 
@@ -2508,17 +2513,46 @@ async function getAllFoldersList() {
     return result;
 }
 
-/**
- * Handles messages from Popup and Options/Diagnostics pages
- */
-if (messenger.runtime && messenger.runtime.onMessage) {
-    messenger.runtime.onMessage.addListener(async (request, sender) => {
-        if (!request || !request.action) {
-            return null;
-        }
+const KNOWN_RUNTIME_ACTIONS = new Set([
+    'GET_DISPLAYED_EVALUATION',
+    'EVALUATE_DISPLAYED_MESSAGE',
+    'HEADER_RULE_ACTION',
+    'GET_STATE',
+    'GET_FOLDERS',
+    'SAVE_SETTINGS',
+    'CLEAR_LOG',
+    'CLEAR_DNS_CACHE',
+    'SCAN_ACTIVE_FOLDER',
+    'SCAN_SELECTED_MESSAGES',
+    'SCAN_FOLDER_BY_ID',
+    'TEST_DOMAIN',
+    'MODIFY_LIST',
+    'CLEAR_LIST',
+    'IMPORT_LISTS',
+    'OPEN_DIAGNOSTIC_MESSAGE'
+]);
 
-        try {
-            switch (request.action) {
+/**
+ * Resolves the currently active MailTab without using deprecated/unsupported mailTabs.getCurrent().
+ * @returns {Promise<object|null>}
+ */
+async function getActiveMailTab() {
+    if (!messenger.mailTabs) return null;
+    let tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
+    if (!tabs || tabs.length === 0) {
+        tabs = await messenger.mailTabs.query({ active: true });
+    }
+    return tabs && tabs.length > 0 ? tabs[0] : null;
+}
+
+/**
+ * Executes a validated runtime action asynchronously and returns its response payload.
+ * @param {object} request
+ * @param {object} sender
+ * @returns {Promise<object|null>}
+ */
+async function handleRuntimeAction(request, sender) {
+    switch (request.action) {
                 case 'GET_DISPLAYED_EVALUATION': {
                     if (!sender || !sender.tab || !messenger.messageDisplay) {
                         return { showMessageBanner: false };
@@ -2622,8 +2656,7 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     if (!messenger.mailTabs) {
                         return { error: L('err_mailtabs_unavail') };
                     }
-                    const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
-                    const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
+                    const activeTab = await getActiveMailTab();
                     if (!activeTab || !activeTab.displayedFolder) {
                         return { error: L('err_no_active_folder') };
                     }
@@ -2634,9 +2667,10 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     if (!messenger.mailTabs) {
                         return { error: L('err_mailtabs_unavail') };
                     }
-                    const tabs = await messenger.mailTabs.query({ active: true, currentWindow: true });
-                    const activeTab = tabs && tabs.length > 0 ? tabs[0] : await messenger.mailTabs.getCurrent();
-                    const msgList = await messenger.mailTabs.getSelectedMessages();
+                    const activeTab = await getActiveMailTab();
+                    const msgList = activeTab
+                        ? await messenger.mailTabs.getSelectedMessages(activeTab.id)
+                        : await messenger.mailTabs.getSelectedMessages();
                     if (!msgList || !msgList.messages || msgList.messages.length === 0) {
                         return { error: L('err_no_selected_msgs') };
                     }
@@ -2763,12 +2797,27 @@ if (messenger.runtime && messenger.runtime.onMessage) {
                     return { success: true, messageId: targetId };
                 }
 
-                default:
-                    return null;
-            }
-        } catch (err) {
-            console.error(`Error handling runtime action ${request.action}:`, err);
-            return { error: err && err.message ? err.message : String(err) };
+        default:
+            return null;
+    }
+}
+
+/**
+ * Handles messages from Popup and Options/Diagnostics pages.
+ * Uses a synchronous listener returning true only for known actions so unknown
+ * messages are never claimed by a Promise.
+ */
+if (messenger.runtime && messenger.runtime.onMessage) {
+    messenger.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (!request || !request.action || !KNOWN_RUNTIME_ACTIONS.has(request.action)) {
+            return false;
         }
+        handleRuntimeAction(request, sender)
+            .then(sendResponse)
+            .catch(err => {
+                console.error(`Error handling runtime action ${request.action}:`, err);
+                sendResponse({ error: err && err.message ? err.message : String(err) });
+            });
+        return true;
     });
 }

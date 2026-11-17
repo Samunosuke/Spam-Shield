@@ -1,0 +1,19 @@
+{
+  "extensionName": {
+    "message": "Spam Shield",
+    "description": "Name of the extension."
+  },
+  "extensionDescription": {
+    "message": "Validates sender domains via whitelist/blacklist, DNS, SPF, DKIM, DMARC, domain age (RDAP), DNSBL and spam-kit detection (EN/DE).",
+    "description": "Description of the extension."
+  },
+  "actionDefaultTitle": {
+    "message": "Spam Shield – Live Diagnostics & Folder Scan",
+    "description": "Tooltip for the main toolbar action button."
+  },
+  "messageDisplayActionTitle": {
+    "message": "Spam Shield – Evaluation & Diagnostics",
+    "description": "Tooltip for the message display action button."
+  }
+}
+
