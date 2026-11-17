@@ -29,7 +29,7 @@ jobs:
 
       - name: Upload XPI and review report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: spam-shield-verification
           path: |
