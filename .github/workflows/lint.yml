@@ -1,0 +1,39 @@
+name: Lint & Pack Spam Shield
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Check JavaScript syntax
+        run: |
+          for file in *.js; do
+            node --check "$file"
+          done
+
+      - name: Pack XPI and run Thunderbird webext-linter
+        run: ./tests/run_linter.sh | tee tests/review_report.txt
+
+      - name: Upload XPI and review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spam-shield-verification
+          path: |
+            spam.shield.xpi
+            tests/review_report.txt
+          if-no-files-found: warn
+
