@@ -2,6 +2,15 @@
 
 All notable changes to **Spam Shield** are documented in this file.
 
+## [1.8.1] - 2026-11-26
+
+### Fixed
+- **Enforced HTTPS-Only RDAP & Fetch Guards (`background.js`):**
+  - Removed the `urls[0]` fallback in `getRdapTldMap()` so non-`https://` RDAP endpoints from the IANA bootstrap list are never selected.
+  - Added explicit `https://` prefix validation in `getDomainAgeRDAP()` and `measureLatency()` before issuing `fetch()` requests.
+- **Updated Privacy Policy (`PRIVACY.md`):**
+  - Documented all external query details (registrable sender domains sent to per-TLD HTTPS RDAP servers; sender domains, DKIM selector names, `_dmarc` names, and DNSBL query hosts built from sender domains and `Received`-header IPs sent to Cloudflare DoH) and explicitly noted that the add-on does not expose itself to websites.
+
 ## [1.8] - 2026-11-13
 
 ### Added

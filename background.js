@@ -1866,7 +1866,7 @@ async function getRdapTldMap() {
                     const tlds = entry[0];
                     const urls = entry[1];
                     if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
-                    const httpsUrl = urls.find(u => typeof u === 'string' && u.startsWith('https://')) || urls[0];
+                    const httpsUrl = urls.find(u => typeof u === 'string' && u.startsWith('https://'));
                     if (!httpsUrl) continue;
                     const normalizedBase = httpsUrl.endsWith('/') ? httpsUrl : `${httpsUrl}/`;
                     for (const tld of tlds) {
@@ -1909,7 +1909,7 @@ async function getDomainAgeRDAP(domain) {
     const tldMap = await getRdapTldMap();
     const rdapBaseUrl = tldMap.get(tld);
 
-    if (!rdapBaseUrl) {
+    if (!rdapBaseUrl || !rdapBaseUrl.startsWith('https://')) {
         const result = { available: false, reason: L('info_rdap_no_tld', { tld }) };
         g_RDAP_CACHE.set(rootDomain, { timestamp: now, result });
         return result;
@@ -2455,6 +2455,9 @@ async function getDNSEntry(domain, type, returnRawStatus = false) {
  * @returns {Promise<{ success: boolean, latency: number }>} the time in milliseconds or -1 if it resulted in an error
  */
 async function measureLatency(url, timeout = 5000) {
+    if (typeof url !== 'string' || !url.startsWith('https://')) {
+        return { success: false, latency: -1 };
+    }
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeout);
     const startTime = performance.now();
