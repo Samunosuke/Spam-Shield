@@ -10,6 +10,8 @@ All notable changes to **Spam Shield** are documented in this file.
   - Added explicit `https://` prefix validation in `getDomainAgeRDAP()` and `measureLatency()` before issuing `fetch()` requests.
 - **Updated Privacy Policy (`PRIVACY.md`):**
   - Documented all external query details (registrable sender domains sent to per-TLD HTTPS RDAP servers; sender domains, DKIM selector names, `_dmarc` names, and DNSBL query hosts built from sender domains and `Received`-header IPs sent to Cloudflare DoH) and explicitly noted that the add-on does not expose itself to websites.
+- **Live Diagnostics Subject Clamping (`styles.css`):**
+  - Clamped subject cells in the Live Diagnostics table to 2 lines with ellipsis (`line-clamp: 2`) while keeping the full subject available on hover.
 
 ## [1.8] - 2026-11-13
 

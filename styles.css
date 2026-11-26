@@ -684,6 +684,15 @@ button.btn-danger {
   max-width: 260px;
 }
 
+.diag-subj > div {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .diag-checks {
   min-width: 440px;
 }
