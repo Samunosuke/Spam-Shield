@@ -1,0 +1,36 @@
+<strong>Spam Shield f&uuml;r Thunderbird &ndash; Datenschutzerkl&auml;rung</strong>
+<em>Stand: November 2026</em>
+
+<strong>1. Grunds&auml;tzliches</strong>
+<strong>Spam Shield</strong> sch&uuml;tzt Ihre Privatsph&auml;re. Die Erweiterung arbeitet lokal in Ihrem Thunderbird-Mailprogramm. Es werden keine Telemetrie- oder Analysedaten erhoben, keine Werbung ausgespielt und keinerlei personenbezogene Daten gesammelt, verkauft oder an Dritte zu Werbe- oder Analysezwecken weitergegeben.
+
+<strong>2. Sichtbarkeit f&uuml;r Websites</strong>
+<strong>Spam Shield</strong> l&auml;uft ausschlie&szlig;lich innerhalb von Thunderbird. Es werden <strong>keine Skripte in Webseiten injiziert</strong> und <strong>Websites wird zu keinem Zeitpunkt signalisiert, dass dieses Add-on installiert ist</strong>.
+
+<strong>3. Lokal verarbeitete und gespeicherte Daten</strong>
+<ul>
+  <li><strong>Absender &amp; E-Mail-Header:</strong> Zur Bewertung eingehender oder manuell gepr&uuml;fter E-Mails liest das Add-on die Absender-Domain sowie relevante Header (<code>DKIM-Signature</code>, <code>Received</code>, <code>Authentication-Results</code>, <code>From</code>, <code>Reply-To</code>, <code>Return-Path</code>) lokal aus.</li>
+  <li><strong>Einstellungen &amp; Diagnose-Protokoll:</strong> S&auml;mtliche Filtereinstellungen, eigene Whitelist-/Blacklist-Eintr&auml;ge und die letzten Bewertungsergebnisse werden ausschlie&szlig;lich im lokalen Speicher von Thunderbird (<code>storage.local</code>) auf Ihrem Ger&auml;t gespeichert und verlassen Ihren Rechner nicht.</li>
+</ul>
+
+<strong>4. Externe Netzwerkabfragen (ausschlie&szlig;lich verschl&uuml;sselt per HTTPS)</strong>
+Zur technischen Pr&uuml;fung der Absender-Domain f&uuml;hrt das Add-on verschl&uuml;sselte (<code>https://</code>) Online-Abfragen an folgende Dienste durch (abh&auml;ngig von den aktivierten Pr&uuml;fmodulen und einem lokalen Zwischenspeicher):
+<ol>
+  <li><strong>DNS-over-HTTPS (<code>https://cloudflare-dns.com/dns-query</code>):</strong>
+    <ul>
+      <li><strong>&Uuml;bermittelte Daten:</strong> F&uuml;r jede gescannte E-Mail erh&auml;lt der Cloudflare-DoH-Dienst <strong>Absender-Domains</strong> (<code>A</code>, <code>AAAA</code>, <code>MX</code>, <code>TXT</code>/SPF), <strong>DKIM-Selektor-Namen</strong> (<code>&lt;selector&gt;._domainkey.&lt;domain&gt;</code>), <strong><code>_dmarc</code>-Namen</strong> (<code>_dmarc.&lt;domain&gt;</code>) sowie <strong>DNSBL-Abfragehosts</strong>, die aus Absender-Domains und IP-Adressen aus <code>Received</code>-Headern gebildet werden.</li>
+      <li><strong>Zweck:</strong> Technische &Uuml;berpr&uuml;fung von Mailserver-Eintr&auml;gen, SPF/DKIM/DMARC sowie &ouml;ffentlichen Spam-Blocklisten.</li>
+    </ul>
+  </li>
+  <li><strong>IANA RDAP-Bootstrap (<code>https://data.iana.org/rdap/dns.json</code>) &amp; TLD-RDAP-Server (<code>https://...</code>):</strong>
+    <ul>
+      <li><strong>&Uuml;bermittelte Daten:</strong> Beim Abruf von <code>https://data.iana.org/rdap/dns.json</code> werden keine E-Mail-Daten &uuml;bertragen; es wird lediglich die &ouml;ffentliche Zuordnung von Top-Level-Domains zu autoritativen HTTPS-RDAP-Servern geladen. Anschlie&szlig;end wird die <strong>registrierbare Absender-Domain</strong> jeder gescannten E-Mail per <code>https://</code> an den zust&auml;ndigen TLD-RDAP-Server gesendet.</li>
+      <li><strong>Zweck:</strong> Ermittlung des Registrierungsdatums bzw. Domain-Alters. Nicht-HTTPS-Endpunkte werden ignoriert.</li>
+    </ul>
+  </li>
+</ol>
+
+<blockquote><strong>Wichtig:</strong> Es werden niemals E-Mail-Inhalte, Betreffzeilen, Empf&auml;ngeradressen, Passw&ouml;rter oder Dateianh&auml;nge &uuml;ber das Netzwerk &uuml;bertragen.</blockquote>
+
+<strong>5. Weitergabe an Dritte</strong>
+Es erfolgt keine Erhebung oder Weitergabe von Daten an den Entwickler oder sonstige Dritte, mit Ausnahme der rein technischen Abfragen an Cloudflare DoH (<code>cloudflare-dns.com</code>), IANA (<code>data.iana.org</code>) und die jeweiligen autoritativen HTTPS-RDAP-Server wie oben beschrieben.

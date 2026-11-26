@@ -1,0 +1,36 @@
+<strong>Spam Shield for Thunderbird &ndash; Privacy Policy</strong>
+<em>Last updated: November 2026</em>
+
+<strong>1. General Principles</strong>
+<strong>Spam Shield</strong> is committed to protecting your privacy. The add-on operates locally within your Thunderbird mail client. It does not track you, does not include any analytics or advertising frameworks, and never collects, sells, or shares personal data with the author or third parties for marketing or profiling purposes.
+
+<strong>2. Website Visibility</strong>
+<strong>Spam Shield</strong> runs exclusively within Thunderbird's email interface and background scripts. It does <strong>not</strong> inject scripts into web pages, does not browse or modify websites, and <strong>does not make it apparent to websites that the add-on is installed</strong>.
+
+<strong>3. Data Processed &amp; Stored Locally</strong>
+<ul>
+  <li><strong>Email Sender &amp; Headers:</strong> To evaluate incoming or manually scanned emails, the add-on reads the sender address/domain and relevant headers (<code>DKIM-Signature</code>, <code>Received</code>, <code>Authentication-Results</code>, <code>From</code>, <code>Reply-To</code>, <code>Return-Path</code>).</li>
+  <li><strong>Settings &amp; Diagnostic Logs:</strong> Your filter configuration, custom Whitelist/Blacklist patterns, and recent evaluation diagnostics are stored exclusively in Thunderbird's local extension storage (<code>storage.local</code>) on your device. This stored data never leaves your computer.</li>
+</ul>
+
+<strong>4. External Network Queries (Encrypted via HTTPS)</strong>
+To verify sender domain authenticity and reputation, the add-on performs direct, encrypted (<code>https://</code>) queries to the following external services when evaluating an email (subject to your enabled checks and local in-memory caching):
+<ol>
+  <li><strong>DNS-over-HTTPS (<code>https://cloudflare-dns.com/dns-query</code>):</strong>
+    <ul>
+      <li><strong>Data sent:</strong> For each scanned email, Cloudflare DoH receives the <strong>sender domain</strong> (for <code>A</code>, <code>AAAA</code>, <code>MX</code>, and <code>TXT</code>/SPF lookups), <strong>DKIM selector names</strong> (<code>&lt;selector&gt;._domainkey.&lt;domain&gt;</code>), <strong><code>_dmarc</code> names</strong> (<code>_dmarc.&lt;domain&gt;</code>), and <strong>DNSBL query hosts</strong> constructed from sender domains and <code>Received</code>-header IP addresses (e.g., reversed IP + DNSBL zone).</li>
+      <li><strong>Purpose:</strong> Technical verification of mail server existence, SPF/DKIM/DMARC authentication, and public blocklist status.</li>
+    </ul>
+  </li>
+  <li><strong>IANA RDAP Bootstrap (<code>https://data.iana.org/rdap/dns.json</code>) &amp; Per-TLD RDAP Servers (<code>https://...</code>):</strong>
+    <ul>
+      <li><strong>Data sent:</strong> Fetching <code>https://data.iana.org/rdap/dns.json</code> transmits no email data; it retrieves the public mapping of top-level domains (TLDs) to authoritative HTTPS RDAP servers. Subsequently, the <strong>registrable sender domain</strong> of each scanned email is sent over <code>https://</code> to the corresponding TLD's RDAP server.</li>
+      <li><strong>Purpose:</strong> Determining the domain's registration date/age. Non-HTTPS RDAP endpoints are never contacted.</li>
+    </ul>
+  </li>
+</ol>
+
+<blockquote><strong>Important:</strong> No email bodies, subjects, recipient addresses, attachments, passwords, or account credentials are ever transmitted over the network.</blockquote>
+
+<strong>5. Data Sharing &amp; Disclosure</strong>
+No personal data is collected, stored on external servers, or disclosed to the add-on author. External transmissions are strictly limited to the technical domain, DKIM/DMARC, and DNSBL lookup queries sent to Cloudflare DoH (<code>cloudflare-dns.com</code>), IANA (<code>data.iana.org</code>), and the respective authoritative HTTPS RDAP registry servers described above.
